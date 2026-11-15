@@ -37,6 +37,7 @@ const S = {
   series: null,                  // measurement over time: { values: Float32Array(nf), label, unit }
   stops: [],                     // lesson stops, sorted by frame
   activeStop: -1, lastFrameInt: -1,
+  mode: 'explore',               // 'explore' (free) or 'lesson' (stops fire, captions show)
   guessed: null,                 // { confidence, notes } from "guess elements"
   frameF: 0, playing: false, fps: 12,
   sel: [],                       // selected atom indices (up to MAX_SEL)
@@ -87,7 +88,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 $('viewport').appendChild(renderer.domElement);
-document.body.appendChild(VRButton.createButton(renderer, { optionalFeatures: ['hand-tracking'] }));
+document.getElementById('barRight').appendChild(VRButton.createButton(renderer, { optionalFeatures: ['hand-tracking'] }));
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d1117);
@@ -292,6 +293,7 @@ async function loadSample() {
           S.stops = (await r.json()).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f);
           S.sampleTour = true;
           renderStops();
+          setMode('lesson');
           S.lastFrameInt = -1; S.dirty = true; // show the first caption
         }
       } catch { /* the sample still works without its tour */ }
@@ -329,6 +331,9 @@ function setTrajectory(traj, seconds) {
   select([]);
 
   $('frame').max = String(traj.frames.length - 1);
+  $('bar').classList.add('loaded');
+  // Loaded: fold the File section away unless the atom types need checking.
+  if (!$('typesSub').open) document.querySelector('details[data-sec="file"]').open = false;
   $('warnings').textContent = [guessNote, ...traj.warnings].filter(Boolean).join(' ');
   const memMB = (traj.frames.length * traj.n * 12) / 1e6;
   setStatus(`${S.name}: ${traj.n.toLocaleString()} atoms, ${traj.frames.length} frames` +
@@ -382,7 +387,7 @@ function applyTopology() {
   S.hb = hbondParticipants(elements, S.staticBonds, sampleFrames(traj));
 
   const nWater = S.water.reduce((a, b) => a + b, 0);
-  $('hideWaterInfo').textContent = nWater ? `(${nWater.toLocaleString()} molecules)` : '(none found)';
+  $('hideWaterInfo').textContent = nWater ? `${nWater.toLocaleString()} water molecules` : 'No water found.';
   $('water').disabled = !nWater;
   $('water').querySelector('option[value="near"]').disabled = !S.soluteIdx.length; // pure water: nothing to be near
   if ((!nWater && S.waterMode !== 'all') || (S.waterMode === 'near' && !S.soluteIdx.length)) setWater('all');
@@ -714,6 +719,11 @@ function renderTypeTable() {
       'Check them (hover for details) and fix any with the dropdowns.</td></tr>');
   }
   $('typeTable').innerHTML = `<tr><th>type</th><th>element</th><th>from</th><th>atoms</th></tr>${rows.join('')}`;
+  const nGuess = g ? Object.keys(g.map).length : 0;
+  const nLow = g ? Object.values(g.confidence).filter((c) => c === 'low').length : 0;
+  $('typesBadge').textContent = `(${S.typeSummary.length}${unknown ? `, ${unknown} unknown` : nLow ? `, ${nLow} to check` : nGuess ? ', guessed' : ''})`;
+  $('typesBadge').style.color = unknown || nLow ? 'var(--warn)' : '';
+  if (unknown || nLow) $('typesSub').open = true; // something needs the user's eye
 }
 
 $('typeTable').addEventListener('change', (e) => {
@@ -855,6 +865,7 @@ function updatePositions() {
 function onFrameChange(i0) {
   const prev = S.lastFrameInt;
   S.lastFrameInt = i0;
+  if (S.mode !== 'lesson') { S.looped = false; drawPlot(); return; } // exploring: stops stay out of the way
   // Playing forward past a stop: apply it (and pause, if asked).
   const looped = S.looped;
   S.looped = false;
@@ -917,7 +928,7 @@ function updateHBonds(cur, recompute) {
   hbMesh.count = m * HB_DASHES;
   hbMesh.instanceMatrix.needsUpdate = true;
   S.hbCount = m;
-  $('hbInfo').textContent = `(${m})`;
+  $('hbInfo').textContent = `${m} H-bond${m === 1 ? '' : 's'}`;
 }
 
 /** Arrows for a vector column at frame i0, scaled so the 98th-percentile vector is ~1.5 Å (× the slider). */
@@ -1306,6 +1317,18 @@ function setPlaying(p) {
 
 function setStatus(s) { $('status').textContent = s; }
 
+// Panel sections remember whether they are open (per browser).
+const UI_KEY = 'md-vr-viewer-sections';
+try {
+  const open = JSON.parse(localStorage.getItem(UI_KEY) || 'null');
+  if (open) document.querySelectorAll('details.sec').forEach((d) => { if (d.dataset.sec in open) d.open = open[d.dataset.sec]; });
+} catch { /* ignore */ }
+document.querySelectorAll('details.sec').forEach((d) => d.addEventListener('toggle', () => {
+  const open = {};
+  document.querySelectorAll('details.sec').forEach((x) => { open[x.dataset.sec] = x.open; });
+  try { localStorage.setItem(UI_KEY, JSON.stringify(open)); } catch { /* ignore */ }
+}));
+
 $('openBtn').onclick = () => $('fileInput').click();
 $('fileInput').onchange = (e) => { if (e.target.files.length) openLocal(e.target.files); e.target.value = ''; };
 $('sampleBtn').onclick = loadSample;
@@ -1352,6 +1375,8 @@ $('findAtom').onchange = (e) => {
   select([i]);
 };
 $('playBtn').onclick = () => setPlaying(!S.playing);
+$('stepBack').onclick = () => { if (S.traj) { setPlaying(false); stepFrame(-1); } };
+$('stepFwd').onclick = () => { if (S.traj) { setPlaying(false); stepFrame(1); } };
 $('frame').oninput = (e) => { setPlaying(false); S.frameF = +e.target.value; S.dirty = true; };
 $('fps').oninput = (e) => { S.fps = +e.target.value; saveSettings(); };
 
@@ -1454,11 +1479,44 @@ function setActiveStop(k) {
 
 function renderStops() {
   $('stopList').innerHTML = S.stops.map((st, k) =>
-    `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span>${esc(st.cap || '(no caption)')}</span>` +
+    `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span class="t" title="${esc(st.cap || '')}">${esc(st.cap || '(no caption)')}</span>` +
     '<span class="x adv" title="Delete this stop">✕</span></li>').join('');
   setActiveStop(Math.min(S.activeStop, S.stops.length - 1));
+  $('stopsBadge').textContent = S.stops.length ? `${S.stops.length} stop${S.stops.length === 1 ? '' : 's'}` : '';
+  $('bar').classList.toggle('has-stops', S.stops.length > 0);
+  $('modeLessonN').textContent = S.stops.length ? ` (${S.stops.length})` : '';
   drawPlot();
 }
+
+/**
+ * Explore: everything is free and stops never fire. Lesson: playback applies stops (settings,
+ * camera, caption) and can pause at them; stops are authored here too. Switching back to Lesson
+ * restores the stop for the current frame, so a student who wandered off is put back on track.
+ */
+function setMode(mode, { restore = true } = {}) {
+  S.mode = mode === 'lesson' ? 'lesson' : 'explore';
+  document.body.classList.toggle('mode-lesson', S.mode === 'lesson');
+  document.body.classList.toggle('mode-explore', S.mode === 'explore');
+  $('modeExplore').classList.toggle('on', S.mode === 'explore');
+  $('modeLesson').classList.toggle('on', S.mode === 'lesson');
+  $('modeExplore').setAttribute('aria-pressed', String(S.mode === 'explore'));
+  $('modeLesson').setAttribute('aria-pressed', String(S.mode === 'lesson'));
+  if (S.mode === 'explore') { setActiveStop(-1); }
+  else {
+    const sec = document.querySelector('details[data-sec="lesson"]');
+    if (sec) sec.open = true;
+    if (!S.stops.length) { const ed = $('editStops'); if (ed) ed.open = true; }
+    if (restore && S.traj && S.stops.length) {
+      const f = Math.round(S.frameF);
+      let k = -1;
+      for (let j = 0; j < S.stops.length; j++) if (S.stops[j].f <= f) k = j;
+      if (k >= 0) applyStop(k, { playback: true }); else setActiveStop(-1);
+    }
+  }
+  S.dirty = true;
+}
+$('modeExplore').onclick = () => setMode('explore');
+$('modeLesson').onclick = () => setMode('lesson');
 
 function addStop(st) {
   S.sampleTour = false; // edited stops are the user's own lesson now
@@ -1494,6 +1552,7 @@ $('updateStop').onclick = () => {
 };
 function gotoStop(dir) {
   if (!S.stops.length || !S.traj) return;
+  if (S.mode !== 'lesson') setMode('lesson', { restore: false });
   const f = Math.round(S.frameF);
   let k;
   if (dir > 0) {
@@ -1528,7 +1587,7 @@ const source = { traj: params.get('traj'), data: params.get('data') };
 /** User-picked files: they have no URL for share links, and the sample's tour does not apply to them. */
 function openLocal(files) {
   source.traj = source.data = null;
-  if (S.sampleTour) { S.stops = []; S.activeStop = -1; S.sampleTour = false; renderStops(); }
+  if (S.sampleTour) { S.stops = []; S.activeStop = -1; S.sampleTour = false; renderStops(); setMode('explore'); }
   if ($('typeMap').value === SAMPLE.map) $('typeMap').value = ''; // the sample's map is not for this file
   loadFiles(files);
 }
@@ -1737,7 +1796,7 @@ function pollGamepads(dt) {
       // Up/down: next/previous lesson stop if there are any, else cycle the water display.
       const flickY = ay > 0.7 ? 1 : ay < -0.7 ? -1 : 0;
       if (flickY && !h.flicked && S.traj) {
-        if (S.stops.length) gotoStop(-flickY); // stick up (negative y) = next
+        if (S.stops.length && S.mode === 'lesson') gotoStop(-flickY); // stick up (negative y) = next
         else { const M = waterModes(); setWater(M[(M.indexOf(S.waterMode) + 1) % M.length]); }
       }
       h.flicked = flick !== 0 || flickY !== 0;
@@ -1762,21 +1821,44 @@ const menu = (() => {
   const nextIn = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
   const WATER_LABEL = { all: 'water: all', near: 'water: near', hide: 'water: off' };
   const HB_LABEL = { off: 'H-bonds: off', solute: 'H-bonds: solute', all: 'H-bonds: all' };
-  const BTNS = [
-    ['back', () => '◀  step'], ['play', () => (S.playing ? '❚❚  pause' : '▶  play')], ['fwd', () => 'step  ▶'], ['reset', () => 'reset view'],
-    ['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
-    ['water', () => WATER_LABEL[S.waterMode]], ['paths', () => (S.showPaths ? 'paths: on' : 'paths: off')],
-    ['hb', () => HB_LABEL[S.hbonds]],
-    ['arrows', () => (S.arrows ? `arrows: ${S.arrows}` : 'arrows: off')],
-    ['prevStop', () => '◀  stop'], ['nextStop', () => 'stop  ▶'],
-  ].map(([id, label], k) => ({ id, label, x: 30 + (k % 4) * 188, y: 456 + Math.floor(k / 4) * 104, w: 176, h: 92 }));
+  // Layout (canvas px): transport row, Explore/Lesson switch, then a 2x4 grid whose buttons
+  // depend on the mode. `modes` limits a button to one mode.
+  const ROW = (k) => ({ x: 30 + (k % 4) * 188, w: 176 });
+  const TRANSPORT = [['back', () => '◀  step'], ['play', () => (S.playing ? '❚❚  pause' : '▶  play')],
+    ['fwd', () => 'step  ▶'], ['reset', () => 'reset view']]
+    .map(([id, label], k) => ({ id, label, ...ROW(k), y: 456, h: 80 }));
+  const MODES = [['modeExplore', () => 'Explore'], ['modeLesson', () => `Lesson${S.stops.length ? ` (${S.stops.length})` : ''}`]]
+    .map(([id, label], k) => ({ id, label, x: 30 + k * 370, w: 370, y: 548, h: 56, seg: true }));
+  const GRID = {
+    explore: [['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
+      ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]],
+      ['paths', () => (S.showPaths ? 'paths: on' : 'paths: off')],
+      ['arrows', () => (S.arrows ? `arrows: ${S.arrows}` : 'arrows: off')],
+      ['smaller', () => 'atoms −'], ['bigger', () => 'atoms +']],
+    lesson: [['prevStop', () => '◀  stop'], ['nextStop', () => 'stop  ▶'], ['firstStop', () => '⏮  restart'],
+      ['pauseStops', () => ($('pauseAtStops').checked ? 'pause at stops' : 'no pausing')],
+      ['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
+      ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]]],
+  };
+  const grid = (mode) => GRID[mode].map(([id, label], k) =>
+    ({ id, label, ...ROW(k), y: 616 + Math.floor(k / 4) * 96, h: 84 }));
+  const GRIDS = { explore: grid('explore'), lesson: grid('lesson') };
+  const visibleButtons = () => [...TRANSPORT, ...MODES, ...GRIDS[S.mode]];
+  /** Sets a page control and fires its handler, so desktop and VR stay in sync. */
+  const nudge = (id, d) => {
+    const el = $(id);
+    el.value = String(THREE.MathUtils.clamp(+el.value + d, +el.min, +el.max));
+    el.dispatchEvent(new Event('input'));
+  };
   const enabled = (id) => {
-    if (id === 'reset') return true;
+    if (id === 'reset' || id === 'modeExplore' || id === 'modeLesson') return true;
     if (!S.traj) return false;
     if (id === 'water') return !$('water').disabled;
     if (id === 'hb') return !$('hbonds').disabled;
     if (id === 'arrows') return S.families.length > 0;
-    if (id === 'prevStop' || id === 'nextStop') return S.stops.length > 0;
+    if (id === 'prevStop' || id === 'nextStop' || id === 'firstStop') return S.stops.length > 0;
+    if (id === 'smaller') return S.atomScale > +$('atomScale').min + 1e-6;
+    if (id === 'bigger') return S.atomScale < +$('atomScale').max - 1e-6;
     return true;
   };
   let hover = new Set();
@@ -1787,15 +1869,17 @@ const menu = (() => {
     if (y >= TL.y - 16 && y <= TL.y + TL.h + 16 && x >= TL.x - 12 && x <= TL.x + TL.w + 12) {
       return { id: 'timeline', frac: THREE.MathUtils.clamp((x - TL.x) / TL.w, 0, 1) };
     }
-    if (S.series && y >= INFO.y && y <= INFO.y + INFO.h && x >= INFO.x && x <= INFO.x + INFO.w) {
+    if (S.series && S.mode === 'explore' && y >= INFO.y && y <= INFO.y + INFO.h && x >= INFO.x && x <= INFO.x + INFO.w) {
       return { id: 'timeline', frac: THREE.MathUtils.clamp((x - INFO.x) / INFO.w, 0, 1) }; // the plot scrubs too
     }
-    for (const b of BTNS) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return { id: b.id };
+    for (const b of visibleButtons()) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return { id: b.id };
     return { id: null }; // on the panel, but not on a control
   }
 
   function press(hit) {
     if (hit.id === 'reset') { resetView(); return; }
+    if (hit.id === 'modeExplore') { setMode('explore'); return; }
+    if (hit.id === 'modeLesson') { setMode('lesson'); return; }
     if (!S.traj || (hit.id !== 'timeline' && !enabled(hit.id))) return;
     switch (hit.id) {
       case 'timeline':
@@ -1814,6 +1898,10 @@ const menu = (() => {
       case 'arrows': setArrows(nextIn(['', ...S.families.map((f) => f.name)], S.arrows)); break;
       case 'prevStop': gotoStop(-1); break;
       case 'nextStop': gotoStop(1); break;
+      case 'firstStop': applyStop(0); break;
+      case 'pauseStops': $('pauseAtStops').checked = !$('pauseAtStops').checked; break;
+      case 'smaller': nudge('atomScale', -0.1); break;
+      case 'bigger': nudge('atomScale', 0.1); break;
     }
   }
 
@@ -1841,7 +1929,7 @@ const menu = (() => {
     const stop = S.stops[S.activeStop];
     const key = [S.name, f, nf, S.playing, Math.round(S.fps), S.rep, S.colorBy, S.waterMode, S.showPaths, S.hbonds,
       S.arrows, S.hbCount, sel, tm, S.activeStop, stop && stop.cap, S.stops.length, !!S.series,
-      [...hover].join(), $('water').disabled].join('|');
+      [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked].join('|');
     if (key === last) return;
     last = key;
 
@@ -1881,7 +1969,7 @@ const menu = (() => {
     ctx.beginPath(); ctx.arc(headX, TL.y + TL.h / 2, tHover ? 20 : 16, 0, Math.PI * 2); ctx.fill();
 
     // Info area: lesson caption takes priority, then the measurement plot, then a hint.
-    if (stop && stop.cap) {
+    if (S.mode === 'lesson' && stop && stop.cap) {
       ctx.fillStyle = '#10243d';
       ctx.beginPath(); ctx.roundRect(INFO.x, INFO.y, INFO.w, INFO.h, 14); ctx.fill();
       ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.stroke();
@@ -1902,24 +1990,28 @@ const menu = (() => {
       plotSeries(ctx, INFO.x, INFO.y, INFO.w, INFO.h, true);
     } else {
       ctx.fillStyle = '#8b949e'; ctx.font = '22px system-ui, sans-serif';
-      const hint = S.traj ? (S.hbonds !== 'off' ? `${S.hbCount || 0} hydrogen bonds shown` : 'trigger 2–4 atoms to plot a distance or angle over time') : '';
+      const hint = !S.traj ? '' : S.mode === 'lesson'
+        ? (S.stops.length ? 'press stop ▶ or play to start the lesson' : 'this file has no lesson stops: switch to Explore')
+        : S.hbonds !== 'off' ? `${S.hbCount || 0} hydrogen bonds shown` : 'trigger 2–4 atoms to plot a distance or angle over time';
       ctx.fillText(clip(ctx, hint, INFO.w - 20), INFO.x + 4, INFO.y + 60);
     }
 
     // Buttons
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const b of BTNS) {
+    for (const b of visibleButtons()) {
       const on = enabled(b.id);
       const hv = hover.has(b.id) && on;
       const active = (b.id === 'play' && S.playing) || (b.id === 'water' && S.waterMode !== 'all') ||
-        (b.id === 'paths' && S.showPaths) || (b.id === 'hb' && S.hbonds !== 'off') || (b.id === 'arrows' && !!S.arrows);
-      ctx.fillStyle = hv ? '#1f6feb' : active ? '#1c3a5e' : '#21262d';
-      ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 16); ctx.fill();
+        (b.id === 'paths' && S.showPaths) || (b.id === 'hb' && S.hbonds !== 'off') || (b.id === 'arrows' && !!S.arrows) ||
+        (b.id === 'pauseStops' && $('pauseAtStops').checked) ||
+        (b.id === 'modeExplore' && S.mode === 'explore') || (b.id === 'modeLesson' && S.mode === 'lesson');
+      ctx.fillStyle = hv ? '#1f6feb' : active ? (b.seg ? '#2b5a91' : '#1c3a5e') : (b.seg ? '#161b22' : '#21262d');
+      ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, b.seg ? 12 : 16); ctx.fill();
       ctx.strokeStyle = hv ? '#58a6ff' : '#30363d'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = on ? '#e6edf3' : '#484f58';
       const text = b.label();
-      ctx.font = '25px system-ui, sans-serif';
+      ctx.font = b.seg ? `${active ? 'bold ' : ''}26px system-ui, sans-serif` : '25px system-ui, sans-serif';
       if (ctx.measureText(text).width > b.w - 14) ctx.font = '21px system-ui, sans-serif'; // shrink long labels first
       ctx.fillText(clip(ctx, text, b.w - 14), b.x + b.w / 2, b.y + b.h / 2 + 1);
     }
@@ -1994,7 +2086,7 @@ async function loadFromParams() {
   if (params.get('fs')) { S.fsPerStep = +params.get('fs') || 0; $('fsPerStep').value = params.get('fs'); }
   if (params.get('shell')) { S.shellR = THREE.MathUtils.clamp(+params.get('shell') || 4, 1, 15); $('shellR').value = String(S.shellR); }
   if (params.get('stops')) {
-    try { S.stops = b64dec(params.get('stops')).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f); renderStops(); }
+    try { S.stops = b64dec(params.get('stops')).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f); renderStops(); setMode('lesson'); }
     catch { setStatus('Could not read the lesson stops in this link.'); }
   }
   const applyViewParams = () => {

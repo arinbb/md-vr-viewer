@@ -167,19 +167,42 @@ frame), costing a few ms even with thousands of H-bonds.
   or handouts.
 - Display settings (style, colors, sizes, speed, timestep size) are remembered per browser.
 
+## The screen
+
+- **Side panel** (top left, ▾/▸ to fold any section; folding is remembered): the status line,
+  the **Explore / Lesson** switch, then *File* (open, stride, atom types), *Appearance*,
+  *Water & H-bonds*, *Select & measure*, *Lesson*, *Advanced* and *Controls & help*. The
+  File section folds itself away after a file loads, unless atom types need checking.
+  The – button hides the whole panel.
+- **Playback bar** (bottom, like a video player): step, play, the frame slider, frame and
+  time, speed, previous/next lesson stop (Lesson mode), reset view, screenshot and
+  **Enter VR**.
+
+### Two modes: Explore and Lesson
+
+- **Explore** is free use. Change anything, play, measure; lesson stops never fire and no
+  caption is shown. Files without stops open in Explore.
+- **Lesson** plays the stops: when playback reaches one, it sets the view and settings and
+  shows its caption (and pauses, if *Pause at each stop* is on). Stops are authored in this
+  mode too. The sample and share links with stops open in Lesson.
+- Switching back to Lesson restores the stop for the current frame, so a student who
+  wandered off in Explore is put back on track. <kbd>N</kbd>/<kbd>B</kbd> (or the stop
+  buttons) switch to Lesson automatically.
+- The same switch is on the VR wrist menu, and the menu's buttons follow the mode.
+
 ## Lessons (narration over time)
 
 A **stop** ties a caption to a frame, together with the camera, the selected atoms and the
 display settings (style, coloring, water, H-bonds, arrows, paths) at that moment.
 
-- **Make one:** go to the moment, set up the view, type a caption and click **Add stop
-  here**. **Update stop** overwrites the highlighted one; ✕ deletes. Stops are kept in
+- **Make one:** in Lesson mode, open *Edit stops and share*, go to the moment, set up the
+  view, type a caption and click **Add stop here**. **Update stop** overwrites the highlighted one; ✕ deletes. Stops are kept in
   frame order.
-- **During playback** the latest caption at or before the current frame is shown on screen
+- **During playback** (Lesson mode) the latest caption at or before the current frame is shown on screen
   and in the VR wrist menu. When playback reaches a stop, its settings and selection are
   applied, and with *Pause at stops* on, playback pauses so a student can read and look
   around.
-- **Navigate:** ◀ Stop / Stop ▶ buttons, <kbd>B</kbd>/<kbd>N</kbd> on the keyboard, the stop buttons
+- **Navigate:** the ⏮ / ⏭ stop buttons in the playback bar, a click in the stop list, <kbd>B</kbd>/<kbd>N</kbd> on the keyboard, the stop buttons
   on the VR menu, or left stick up/down in VR. Stops show as yellow ticks on the VR timeline.
 - **Share:** **Copy share link** produces a URL with the file, element mapping, display
   settings and all stops. With *student mode* ticked, the link hides the loading,
@@ -195,15 +218,19 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
 - **VR:** on entering, the system appears about 0.75 m in front of you, just below eye
   level, wherever you are standing or sitting.
   - **Wrist menu** (on the left controller, always turned toward your eyes): point with the
-    right controller and pull the trigger to play/pause, step, drag the timeline, reset the
-    view, step through lesson stops, and switch style, coloring, water, H-bonds, arrows and
-    paths. Its middle panel shows the current stop's caption, else the measurement plot.
+    right controller and pull the trigger. Top to bottom: status, the timeline (drag to
+    scrub; yellow ticks are stops), an info panel (the stop's caption in Lesson mode, else
+    the measurement plot), a step / play / step / reset row, the **Explore | Lesson** switch,
+    and eight buttons for the current mode:
+    - *Explore:* style, coloring, water, H-bonds, paths, arrows, atoms −, atoms +.
+    - *Lesson:* previous stop, next stop, restart, pause-at-stops on/off, style, coloring,
+      water, H-bonds.
   - **Grip** to grab and move the system; **both grips** to scale and rotate it.
   - **Trigger** on atoms to pick them (up to 4 for measuring; trigger on empty space clears).
     The ray stops on whatever it is pointing at.
   - Shortcuts: A/X play/pause, B/Y style, thumbstick click re-centers the view, right stick
-    ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop (cycles the
-    water display when there are no stops). On trackpad controllers (Vive wands) the pad
+    ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop in Lesson mode
+    (cycles the water display in Explore). On trackpad controllers (Vive wands) the pad
     acts as the stick while touched, and pressing it re-centers.
   - Hand tracking: pinch to pick, pinch-grab to move.
 

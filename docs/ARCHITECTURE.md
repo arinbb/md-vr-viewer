@@ -127,14 +127,21 @@ which is what makes them testable without a browser.
 ### 3.1 `index.html`: the page
 
 - **Import map**, which maps `three` and `three/addons/` to pinned CDN URLs.
-- **Control panel** (`#ui`), with sections Load, Atom types, Display, Playback,
-  Selection & measurement (with the measurement plot canvas), Lesson, and Controls. It
-  collapses with the `–` button. Elements with class `adv` are hidden in student mode
-  (`body.student`).
+- **Side panel** (`#ui`): header, status line (`#statusBox`), the Explore / Lesson switch
+  (`#modeBox`), then collapsible `<details class="sec" data-sec=…>` sections: File (with a
+  nested *Atom types and elements* table), Appearance, Water & H-bonds, Select & measure
+  (with the plot canvas), Lesson (with a nested *Edit stops and share*), Advanced, and
+  Controls & help. Open/closed state is saved under `md-vr-viewer-sections` in
+  localStorage. In Lesson mode the Lesson section moves to the top (flex `order`). The `–`
+  button collapses the panel. Elements with class `adv` are hidden in student mode
+  (`body.student`): File, Advanced and the stop editor.
+- **Playback bar** (`#bar`): step, play, frame slider, frame/time, speed, stop buttons
+  (Lesson mode with stops only), reset, screenshot, and the three.js `VRButton`, which is
+  moved into the bar and restyled.
 - **Caption overlay** (`#caption`) for the active lesson stop.
 - **Drop overlay** (`#drop`) for drag-and-drop.
-- **CSS** uses a dark theme in custom properties (`--bg`, `--panel`, …) and a mobile
-  breakpoint at 600 px.
+- **CSS** uses a dark theme in custom properties (`--bg`, `--panel`, `--bar-h`, …) and a
+  phone breakpoint at 700 px (full-width panel and caption, icon-only stop buttons).
 
 Every control has an `id`, and `main.js` wires them up in its *UI wiring* section.
 There is no other coupling between the two files.
@@ -541,6 +548,13 @@ section 5.2); see section 5.3 for timings.
 ### 6.9 Lesson stops and share links
 
 A stop is `{ f, cap, sel: [atom-IDs], v: { rep, color, water, shell, hb, arrows, paths }, cam }`.
+
+**Modes.** `S.mode` is `'explore'` or `'lesson'` (`setMode`, which also sets `body.mode-*`
+classes that show or hide the Lesson section, the caption and the stop buttons). In Explore,
+`onFrameChange` returns before any stop logic, so nothing overrides the user. Entering
+Lesson applies the latest stop at or before the current frame (`applyStop(k, {playback:
+true})`, no frame jump). Loading stops (the sample tour or a link) selects Lesson; opening a
+local file after the sample's tour selects Explore; `gotoStop` switches to Lesson.
 `cam` holds the camera position and orbit target in **model coordinates**, so it survives
 a refit or window resize. Stops are kept sorted by frame.
 
@@ -571,7 +585,7 @@ stateDiagram-v2
 | **Placement** | On session start, reads the `XRViewerPose` directly from the `XRFrame` (reliable on the first frame) and puts `root` 0.75 m in front of the head along the horizontal look direction, 15 cm below eye level, rotated to face the user. |
 | **Grab (one hand)** | On `squeezestart`, stores `offset = inverse(controller) × root`; each frame sets `root = controller × offset`. The system moves rigidly with the hand. |
 | **Grab (two hands)** | Stores the initial hand distance, the hand-to-hand direction and the root point under the midpoint. Each frame, scale = s₀·d/d₀, rotation = (quaternion turning the old hand-to-hand direction into the new one) × q₀, and the position keeps the same root point under the midpoint. |
-| **Wrist menu** (`menu`) | An 800×880 canvas on a 20×22 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; else the measurement plot, which also scrubs), and 12 buttons (step, play, reset, style, color, water, paths, H-bonds, arrows, previous/next stop). `hitTest(uv)` maps the ray's UV hit to a button or timeline position; `press()` performs the action. Long labels shrink to 21 px before clipping. It redraws only when its state key changes. |
+| **Wrist menu** (`menu`) | An 800×880 canvas on a 20×22 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch, and a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
 | **Ray priority** | `updateHover` raycasts the menu first (three.js `Raycaster` against one plane), then atoms. While a ray is on the menu, the trigger never picks atoms behind it. Holding the trigger on the timeline scrubs. |
 | **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
 | **Hand tracking** | Requested as an optional feature. A pinch fires `select`/`squeeze` like a controller, and the laser is hidden for hands. |
@@ -614,7 +628,7 @@ sequenceDiagram
 | Parsers, topology, geometry | `tools/test_parser.mjs`: Node + `assert` on the synthetic fixture (`tools/fixtures/`) and hand-built edge cases. Covers frame/ID ordering, image-flag unwrapping, scaled and triclinic coordinates, XYZ, stride, streaming, the memory-guard stride, truncated files, groups and water detection, repairing 1,566 split bonds, continuous paths, triclinic minimum image, measurements, periodic and triclinic bond inference, and 30k-atom bond-inference speed. | `node tools/test_parser.mjs` |
 | Desktop UI | Browser checks through `window.viewer` (`screenOf(i)` converts an atom to screen pixels for real clicks) | manual / scripted |
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
-| VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
+| VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel; after the UI update: the Explore/Lesson switch both ways, next stop, atoms +, water, play/pause, all by aiming the controller and pulling the trigger), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
 | Lessons and links | Browser checks: stops pause playback at the right frame, a copied share link restores mapping, settings and stops in student mode | manual / scripted |
 | Real headset | Not yet done | see README |
 

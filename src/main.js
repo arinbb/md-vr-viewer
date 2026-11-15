@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { ELEMENTS, paletteColor } from './elements.js';
 import {
@@ -88,7 +87,47 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 $('viewport').appendChild(renderer.domElement);
-document.getElementById('barRight').appendChild(VRButton.createButton(renderer, { optionalFeatures: ['hand-tracking'] }));
+document.getElementById('barRight').appendChild(makeVRButton());
+
+/**
+ * Our own Enter VR button (in the playback bar), with plain-language states instead of
+ * three.js's VRButton: checks for a headset, says what to do when there is none, and re-checks
+ * when a headset is connected later.
+ */
+function makeVRButton() {
+  const b = document.createElement('button');
+  b.id = 'vrBtn';
+  let session = null;
+  const set = (text, enabled, title = '') => { b.textContent = text; b.disabled = !enabled; b.title = title; b.classList.toggle('primary', enabled); };
+  const NO_HEADSET = 'No headset found. Connect one (Quest Link, Air Link, Virtual Desktop or SteamVR) and reload, ' +
+    'or use the Quest browser. To try VR without a headset, add ?emulate to the address.';
+  if (!navigator.xr) {
+    set(window.isSecureContext ? 'VR unavailable' : 'VR needs https', false,
+      window.isSecureContext ? 'This browser has no WebXR. Use Chrome or Edge on a PC, or the Quest browser.'
+        : 'WebXR only works on https:// pages or localhost.');
+    return b;
+  }
+  const check = () => navigator.xr.isSessionSupported('immersive-vr')
+    .then((ok) => { if (!session) set(ok ? 'Enter VR' : 'No headset', ok, ok ? 'Put on the headset and click' : NO_HEADSET); })
+    .catch(() => set('No headset', false, NO_HEADSET));
+  set('Checking VR…', false);
+  check();
+  navigator.xr.addEventListener?.('devicechange', check);
+  b.onclick = async () => {
+    if (session) { session.end(); return; }
+    try {
+      const s = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'] });
+      session = s;
+      s.addEventListener('end', () => { session = null; check(); });
+      await renderer.xr.setSession(s);
+      set('Exit VR', true);
+    } catch (e) {
+      session = null;
+      setStatus(`Could not start VR: ${e.message}`);
+    }
+  };
+  return b;
+}
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d1117);
@@ -332,6 +371,8 @@ function setTrajectory(traj, seconds) {
 
   $('frame').max = String(traj.frames.length - 1);
   $('bar').classList.add('loaded');
+  // On a phone the panel would cover most of the molecule: fold it to its header (tap + to open).
+  if (window.matchMedia('(max-width: 700px)').matches) setPanelCollapsed(true);
   // Loaded: fold the File section away unless the atom types need checking.
   if (!$('typesSub').open) document.querySelector('details[data-sec="file"]').open = false;
   $('warnings').textContent = [guessNote, ...traj.warnings].filter(Boolean).join(' ');
@@ -786,7 +827,9 @@ function updatePositions() {
   if (newContacts) {
     V.set(S.baseVisible);
     if (S.waterMode === 'near' && S.waterIdx.length && S.soluteIdx.length) {
-      const near = nearMask(cur, S.soluteIdx, S.waterIdx, S.shellR, traj.n);
+      // The data frame's own positions (not the in-between ones of smooth playback), so the shell
+      // is the same however you arrive at a frame. Periodic: contacts across the box edge count.
+      const near = nearMask(traj.frames[i0].pos, S.soluteIdx, S.waterIdx, S.shellR, traj.n, box);
       const g = S.groups.group;
       const keepGroup = new Uint8Array(S.groups.count);
       for (const i of S.waterIdx) if (near[i]) keepGroup[g[i]] = 1;
@@ -839,7 +882,7 @@ function updatePositions() {
     bondMesh.instanceMatrix.needsUpdate = true;
   }
 
-  updateHBonds(cur, newContacts);
+  updateHBonds(cur, newContacts, box, traj.frames[i0].pos);
   updateArrows(cur, i0);
 
   // Box.
@@ -886,7 +929,8 @@ function onFrameChange(i0) {
 }
 
 /** H···A dashes for the current positions; the bond list itself is recomputed per data frame. */
-function updateHBonds(cur, recompute) {
+const _hbd = [0, 0, 0];
+function updateHBonds(cur, recompute, box, framePos) {
   const on = S.hbonds !== 'off' && !!S.hb && S.hb.hd.length > 0;
   if (!on) {
     if (hbMesh) hbMesh.visible = false;
@@ -895,11 +939,26 @@ function updateHBonds(cur, recompute) {
     return;
   }
   if (recompute || !S.hbPairs) {
-    const V = S.visible, W = S.isWater;
-    const solute = S.hbonds === 'solute';
-    S.hbPairs = findHBonds(cur, S.hb, {
-      keep: (h, d, a) => V[h] && V[a] && (!solute || !W[d] || !W[a]),
-    });
+    // Narrow the candidates before the geometric search: only shown atoms, and in solute mode
+    // only pairs with a solute donor or a solute acceptor. Same result as filtering afterwards,
+    // but with water hidden or in shell mode most of the 2 H per water drop out up front.
+    const V = S.visible, W = S.isWater, { hd, acc } = S.hb;
+    const hdShown = [], hdSolute = [], accSolute = [], accWater = [];
+    for (let k = 0; k < hd.length; k += 2) {
+      if (!V[hd[k]]) continue;
+      hdShown.push(hd[k], hd[k + 1]);
+      if (!W[hd[k + 1]]) hdSolute.push(hd[k], hd[k + 1]);
+    }
+    for (const a of acc) if (V[a]) (W[a] ? accWater : accSolute).push(a);
+    const I = (x) => Int32Array.from(x);
+    if (S.hbonds === 'solute') {
+      const toSolute = findHBonds(framePos, { hd: I(hdShown), acc: I(accSolute) }, { box });   // any donor -> solute
+      const fromSolute = findHBonds(framePos, { hd: I(hdSolute), acc: I(accWater) }, { box }); // solute donor -> water
+      S.hbPairs = new Int32Array(toSolute.length + fromSolute.length);
+      S.hbPairs.set(toSolute); S.hbPairs.set(fromSolute, toSolute.length);
+    } else {
+      S.hbPairs = findHBonds(framePos, { hd: I(hdShown), acc: I([...accSolute, ...accWater]) }, { box });
+    }
   }
   const pairs = S.hbPairs;
   const m = pairs.length / 2;
@@ -910,7 +969,10 @@ function updateHBonds(cur, recompute) {
   for (let k = 0; k < m; k++) {
     const h = pairs[2 * k], x = pairs[2 * k + 1];
     const ax = cur[3 * h], ay = cur[3 * h + 1], az = cur[3 * h + 2];
-    let dx = cur[3 * x] - ax, dy = cur[3 * x + 1] - ay, dz = cur[3 * x + 2] - az;
+    // Toward the nearest periodic image of the acceptor: an H-bond across the box edge is drawn
+    // as a short dash poking out of the box, not a line spanning it.
+    minImage(box, cur[3 * x] - ax, cur[3 * x + 1] - ay, cur[3 * x + 2] - az, _hbd);
+    let dx = _hbd[0], dy = _hbd[1], dz = _hbd[2];
     const len = Math.hypot(dx, dy, dz) || 1;
     dx /= len; dy /= len; dz /= len;
     let ux, uy, uz;
@@ -1332,10 +1394,12 @@ document.querySelectorAll('details.sec').forEach((d) => d.addEventListener('togg
 $('openBtn').onclick = () => $('fileInput').click();
 $('fileInput').onchange = (e) => { if (e.target.files.length) openLocal(e.target.files); e.target.value = ''; };
 $('sampleBtn').onclick = loadSample;
-$('collapse').onclick = () => {
-  $('ui').classList.toggle('collapsed');
-  $('collapse').textContent = $('ui').classList.contains('collapsed') ? '+' : '–';
-};
+function setPanelCollapsed(c) {
+  $('ui').classList.toggle('collapsed', c);
+  $('collapse').textContent = c ? '+' : '–';
+  $('collapse').title = c ? 'Show the controls' : 'Hide the controls';
+}
+$('collapse').onclick = () => setPanelCollapsed(!$('ui').classList.contains('collapsed'));
 $('typeMap').onchange = () => {
   if (!S.traj) return;
   const sel = S.sel;
@@ -1516,6 +1580,16 @@ function setMode(mode, { restore = true } = {}) {
   S.dirty = true;
 }
 $('modeExplore').onclick = () => setMode('explore');
+// Found a good moment while exploring: switch to Lesson without disturbing the view, and get the
+// caption box ready (Add stop here saves it).
+$('saveMoment').onclick = () => {
+  if (!S.traj) return;
+  setPlaying(false);
+  setMode('lesson', { restore: false });
+  $('editStops').open = true;
+  $('stopCaption').focus();
+  $('linkInfo').textContent = 'Type a caption, then click Add stop here.';
+};
 $('modeLesson').onclick = () => setMode('lesson');
 
 function addStop(st) {
@@ -1772,7 +1846,11 @@ function pollGamepads(dt) {
     // xr-standard mapping: thumbstick on axes 2/3 (button 3); touchpad on axes 0/1 (button 2).
     // Controllers with only a touchpad (HTC Vive wands) use it as the stick, read only while touched
     // so a resting thumb does nothing; pressing the pad resets the view.
-    const hasStick = gp.axes.length >= 4 && gp.buttons.length > 3;
+    // Profiles name the hardware: 'generic-trigger-squeeze-touchpad' (Vive wands) has no stick;
+    // '...-thumbstick' variants (Quest, Index) do. Without profiles, fall back to the layout.
+    const prof = h.source.profiles || [];
+    const touchpadOnly = prof.some((p) => p.includes('touchpad')) && !prof.some((p) => p.includes('thumbstick'));
+    const hasStick = !touchpadOnly && gp.axes.length >= 4 && gp.buttons.length > 3;
     if (edge(hasStick ? 3 : 2)) resetView();                               // stick / pad click
     const padOn = !hasStick && gp.buttons[2] && gp.buttons[2].touched;
     const ax = hasStick ? gp.axes[2] || 0 : padOn ? gp.axes[0] || 0 : 0;

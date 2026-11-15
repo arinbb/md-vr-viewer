@@ -63,7 +63,6 @@ no `node_modules` and nothing to install.
 |---|---|---|---|
 | **three.js** core | 0.169.0 | jsDelivr, via the import map in `index.html` | Scene graph, WebGL 2 renderer, `InstancedMesh`, materials, math (vectors, quaternions, matrices), `Raycaster`, `CanvasTexture`, `Sprite` |
 | `OrbitControls` (three addon) | 0.169.0 | same | Desktop mouse rotate / zoom / pan |
-| `VRButton` (three addon) | 0.169.0 | same | The *Enter VR* button: feature detection, `navigator.xr.requestSession('immersive-vr')`, session lifecycle |
 | `XRControllerModelFactory` (three addon) | 0.169.0 | same; it fetches controller 3D models from the WebXR Input Profiles CDN | Real-looking controller models that match the connected hardware |
 | **IWER** (Immersive Web Emulation Runtime, by Meta) | 2.1.1 | jsDelivr `+esm`, only when the URL has `?emulate` | Emulates a Quest 3 (headset and both controllers) in a desktop browser for development and automated testing |
 
@@ -136,8 +135,10 @@ which is what makes them testable without a browser.
   button collapses the panel. Elements with class `adv` are hidden in student mode
   (`body.student`): File, Advanced and the stop editor.
 - **Playback bar** (`#bar`): step, play, frame slider, frame/time, speed, stop buttons
-  (Lesson mode with stops only), reset, screenshot, and the three.js `VRButton`, which is
-  moved into the bar and restyled.
+  (Lesson mode with stops only), reset, screenshot, and our own Enter VR button
+  (`makeVRButton` in `main.js`: checks `isSessionSupported`, plain-language states such as
+  *No headset* with a tooltip on what to do, re-checks on `devicechange`, requests the
+  session and hands it to `renderer.xr.setSession`).
 - **Caption overlay** (`#caption`) for the active lesson stop.
 - **Drop overlay** (`#drop`) for drag-and-drop.
 - **CSS** uses a dark theme in custom properties (`--bg`, `--panel`, `--bar-h`, …) and a
@@ -233,9 +234,9 @@ Each request has an `id`, so overlapping loads can't be confused. `main.js` also
 | Export | Purpose |
 |---|---|
 | `guessElements(traj, known)` | Elements for numeric types from bonding geometry (section 6.7) |
-| `nearMask(pos, refIdx, candIdx, R, n)` | Marks candidate atoms within R of any reference atom (uniform grid); used for the water shell |
+| `nearMask(pos, refIdx, candIdx, R, n, box)` | Marks candidate atoms within R of any reference atom (cell list, periodic with a box; grids whichever list is larger); used for the water shell |
 | `hbondParticipants(elements, bonds, frames)` | Donor pairs `[h, d]` (H bonded to N/O/F) and acceptors: O, F, and N with a free lone pair (section 6.8) |
-| `findHBonds(pos, participants, opts)` | `[h, a]` pairs with H···A ≤ 2.5 Å and D–H···A ≥ 120° (section 6.8) |
+| `findHBonds(pos, participants, opts)` | `[h, a]` pairs with H···A ≤ 2.5 Å and D–H···A ≥ 120°, periodic with `opts.box` (section 6.8) |
 
 ### 3.7 `props.js`: extra dump columns
 
@@ -371,8 +372,10 @@ This only runs when something changed (`S.dirty`: playback, scrubbing or a style
 3. **Reactive bonds** (optional): re-run `inferBonds` when the integer frame changes.
 4. **Contacts**, only when `contactKey` (data frame, water mode, shell radius, H-bond mode,
    style revision, reactive bond frame) changes: the solvation-shell visibility mask
-   (`nearMask`) and the H-bond list (`findHBonds`). During smooth playback the in-between
-   positions reuse them, so these costs are paid once per data frame, not per display frame.
+   (`nearMask`) and the H-bond list (`findHBonds`), computed from the data frame's own
+   positions with the periodic box (so the result is the same however you arrive at a frame).
+   During smooth playback the in-between frames reuse them, so these costs are paid once per
+   data frame, not per display frame. The dashes themselves follow the displayed positions.
 5. **Data coloring:** when coloring by a column, recolor on each new data frame.
 6. **Write atom matrices** straight into `instanceMatrix.array` (scale = radius, or 0 when
    hidden; translation = position). This avoids `Matrix4.compose` and is several times faster
@@ -404,7 +407,7 @@ This only runs when something changed (`S.dirty`: playback, scrubbing or a style
 - Measured on an RTX 4070 Ti SUPER desktop: a 24k-atom system plays at 60 fps (vsync),
   and a 47 MB dump parses in 0.4 s. `updatePositions` costs ~3.5 ms at 24k atoms; with all
   8,160 water–water H-bonds on it costs ~8 ms on a new data frame and ~3.5 ms between
-  frames. The 9,192-atom caffeine system with shell + H-bonds costs ~4.4 ms per new frame
+  frames. The 9,192-atom caffeine system with shell + solute H-bonds (periodic) costs ~4.0 ms per new frame
   and ~1.3 ms between frames.
 
 ---
@@ -523,19 +526,25 @@ or several valence assignments were valid. The *Atom types* table shows *guessed
 ### 6.8 Hydrogen bonds and the water shell
 
 Both use a uniform cell list (`buildGrid` in `chem.js`: counting sort into typed arrays,
-like `inferBonds`) on the **displayed** coordinates, so they agree with what is on screen
-after wrapping:
+like `inferBonds`) periodically, on the data frame's positions:
 
-- **Shell:** grid the solute (all non-water atoms) with cell size R. A water molecule is
-  shown if any of its atoms has a solute atom within R. The shell follows the molecules:
-  it is recomputed on every new data frame. For pure water there is no solute, so the
+- **Cell list** (`buildGrid`): with a periodic box, cells tile the box in fractional
+  coordinates, as many per box vector as fit with a perpendicular width ≥ the cutoff, and
+  neighbor cells wrap around (with fewer than 3 cells along a vector, all are visited once).
+  Distances use the minimum image (`makeDelta`: inline for orthogonal boxes, `minImage` for
+  triclinic). Without a box, cells cover the atoms' bounding box. Counting sort into typed
+  arrays, preallocated neighbor spans: no allocations per query.
+- **Shell:** a water molecule is shown if any of its atoms is within R of a solute atom.
+  `nearMask` grids whichever list is larger and queries the smaller (192 caffeine atoms
+  against 9,000 water atoms: grid the water). For pure water there is no solute, so the
   *Near solute* option is disabled.
-- **H-bonds:** grid the acceptors with cell size 2.5 Å. For each donor hydrogen, test the
-  acceptors in the 27 neighboring cells: H···A ≤ 2.5 Å and cos∠(D–H···A) ≤ cos 120°. A
-  `keep` filter applies visibility and the *with solute* rule (donor or acceptor
-  molecule must be non-water).
-- **Acceptors** (`hbondParticipants`): every O and F, but N only when its lone pair is
-  free. N with 4 bonds (ammonium, NH₃⁺) is skipped. N with 3 bonds is skipped when planar:
+- **H-bonds:** grid the acceptors with cell size 2.5 Å; for each donor hydrogen test
+  H···A ≤ 2.5 Å and cos∠(D–H···A) ≤ cos 120°. `updateHBonds` narrows the candidates first:
+  only shown atoms, and for *with solute* two searches (any donor → solute acceptors, solute
+  donors → water acceptors) instead of filtering every water–water contact afterwards.
+  Bonds across the box edge are drawn toward the acceptor's nearest image.
+- **Acceptors** (`hbondParticipants`): every F, O with at most 2 bonds (3-bonded O such as
+  H₃O⁺ is skipped), and N only when its lone pair is free. N with 4 bonds (ammonium, NH₃⁺) is skipped. N with 3 bonds is skipped when planar:
   its distance from the plane of its three neighbors, averaged over the first, middle and
   last frames (current frame in reactive mode), is under 0.2 Å. Amide, aromatic and
   methylated ring N (caffeine's N1/N3/N7) are planar, and amines are pyramidal (about 0.35–0.45 Å).
@@ -572,7 +581,7 @@ a refit or window resize. Stops are kept sorted by frame.
 ```mermaid
 stateDiagram-v2
     [*] --> Desktop
-    Desktop --> Immersive: Enter VR (VRButton)
+    Desktop --> Immersive: Enter VR (makeVRButton)
     Immersive --> Placed: first XR frame → placeInFrontOfHead(viewerPose)
     Placed --> Placed: each frame: pollGamepads → updateGrab → menu.faceHead/draw → updatePositions → updateHover → render
     Placed --> Placed: thumbstick click / menu "reset view" → needPlace
@@ -637,8 +646,12 @@ columns and vector detection, diverging ranges, a gzip round-trip through
 `DecompressionStream`, element guessing, exactly one H-bond in a linear dimer and none
 when bent, the shell mask, and the acceptor rule (planar, pyramidal, 4-bonded and
 2-bonded N). On the bundled caffeine sample, guessing gets all 26 types right (this map is
-built into `loadSample`), and the tour's numbers (box size and density, shell size, H-bonds
-per acceptor) were computed from the data with these modules.
+built into `loadSample`). The tour's numbers (box size and density, shell size, H-bonds per
+acceptor) were computed from the data with these modules, periodically, over the
+equilibrated frames 12–51 only; the viewer reproduces the per-frame counts exactly (333
+shell waters at frame 21, 25 solute H-bonds at frame 26). Periodic contact tests cover
+orthogonal and triclinic boxes, an image shifted by a lattice vector, boxes too small for
+3 cells, and both search directions of `nearMask`.
 
 `tools/make_sample.py` makes the synthetic fixture (`tools/fixtures/synthetic.*`): 90 waters and 3 glycines in an
 18 Å box, 120 frames, with shuffled rows, wrapped coordinates and image flags, numeric
@@ -658,7 +671,7 @@ be physically realistic.
 | Something else saved in lesson stops | `captureStop` / `applyStop` in `main.js` (the `v` object), plus a link parameter in `shareLink` / `loadFromParams` if it should also be a top-level setting |
 | Hide another control in student mode | Add `class="adv"` to it in `index.html` |
 | New representation | Option in `#rep`, a radius rule in `atomRadius`, a bond radius in `updatePositions`, and an entry in `REPS` / `REP_NAMES` |
-| New VR menu button | Add `[id, labelFn]` to `BTNS` in `menu` (4 columns, currently 3 full rows; a 4th row needs the canvas `H` and footer positions to grow), a `case` in `menu.press`, and an `enabled` rule if it can be unavailable |
+| New VR menu button | Add `[id, labelFn]` to `GRID.explore` and/or `GRID.lesson` in `menu` (2×4 each; more needs a third row, so the canvas `H` and footer positions grow), a `case` in `menu.press`, and an `enabled` rule if it can be unavailable |
 | New element | Add a row to `ELEMENTS` in `elements.js` (color, covalent and vdW radii, mass) |
 | Another file format (e.g. PDB, DCD) | A new parser class with `push(line)` / `finish()` that returns the trajectory model; register it in `detectFormat` / `createTrajectoryParser`. Binary formats like DCD need a byte-level reader in the worker instead of the text-line path. |
 | Very large trajectories | Replace "all frames in memory" with a preprocessed binary file plus on-demand frame loading; the per-frame pipeline only needs `frames[i].pos` for the current and next frame |

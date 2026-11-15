@@ -29,7 +29,7 @@
   },
   {
     "f": 11,
-    "cap": "Pressure and temperature are held constant (NPT), so the box shrank to about 44.5 Å and 1.05 g/cm³, and stays there. Earlier frames are equilibration, normally left out of analysis.",
+    "cap": "Pressure and temperature are held constant (NPT), so the box shrank to about 44.4 Å and 1.06 g/cm³, and stays there. Earlier frames are equilibration: the numbers in this tour use frames 12–51 only.",
     "sel": [],
     "v": {
       "rep": "ballstick",
@@ -43,7 +43,7 @@
   },
   {
     "f": 20,
-    "cap": "Only waters within 4 Å of a caffeine are shown: roughly the first hydration shell, about 300 of the 3,000. Play and watch waters join and leave.",
+    "cap": "Only waters within 4 Å of a caffeine are shown: roughly the first hydration shell, about 340 of the 3,000. Play and watch waters join and leave.",
     "sel": [],
     "v": {
       "rep": "ballstick",
@@ -71,10 +71,10 @@
   },
   {
     "f": 35,
-    "cap": "The same ring carbon in two caffeines: the plot shows their distance (click to jump), the paths their motion. They drift from about 14 to 11 Å apart. Caffeine can stack face to face in water, but no pair does in this short run.",
+    "cap": "The same ring carbon in caffeines 1 and 2: the plot shows their distance (click to jump), the paths their motion. It wanders between 19 and 26 Å with no trend. Caffeine can stack in water (rings about 3.4 Å apart), but no two come closer than 5 Å here.",
     "sel": [
-      77,
-      101
+      5,
+      29
     ],
     "v": {
       "rep": "ballstick",

@@ -1,68 +1,166 @@
 // Chemistry helpers on positions: guessing elements from bonding geometry, "atoms near X" masks
 // for solvation shells, and hydrogen-bond detection. Pure functions (testable in Node).
 import { inferBonds } from './model.js';
-import { minImage } from './analysis.js';
+import { minImage, boxVectors, frac } from './analysis.js';
 
 // ---------------------------------------------------------------------------
-// Uniform cell list over a subset of atoms (non-periodic: works on displayed coordinates).
-// Counting sort into typed arrays: no per-cell allocations, so it is cheap to rebuild per frame.
+// Uniform cell list over a subset of atoms. Counting sort into typed arrays: no per-cell
+// allocations, so it is cheap to rebuild per frame.
+//
+// With a periodic `box`, cells tile the box in fractional coordinates and wrap around, and
+// distances use the minimum image, so contacts across the box edge are found (orthogonal and
+// triclinic boxes). Without a box, cells cover the bounding box of the atoms as displayed.
 
-function buildGrid(pos, idx, cell) {
-  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
-  for (let k = 0; k < idx.length; k++) {
-    const i = idx[k];
-    const x = pos[3 * i], y = pos[3 * i + 1], z = pos[3 * i + 2];
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-    if (z < z0) z0 = z; if (z > z1) z1 = z;
+const MAX_CELLS = 4e6;
+
+/** Minimum-image displacement for the box (fast path for orthogonal boxes). */
+function makeDelta(box) {
+  if (!box || !box.periodic.some(Boolean)) {
+    return (dx, dy, dz, out) => { out[0] = dx; out[1] = dy; out[2] = dz; return out; };
   }
-  // Keep the cell count bounded for sparse or huge systems.
-  while (((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) * ((z1 - z0) / cell + 1) > 4e6) cell *= 1.5;
-  const nx = Math.floor((x1 - x0) / cell) + 1, ny = Math.floor((y1 - y0) / cell) + 1, nz = Math.floor((z1 - z0) / cell) + 1;
+  if (box.tilt.every((t) => t === 0)) {
+    const L = [0, 1, 2].map((d) => box.hi[d] - box.lo[d]);
+    const P = box.periodic;
+    return (dx, dy, dz, out) => {
+      out[0] = P[0] ? dx - L[0] * Math.round(dx / L[0]) : dx;
+      out[1] = P[1] ? dy - L[1] * Math.round(dy / L[1]) : dy;
+      out[2] = P[2] ? dz - L[2] * Math.round(dz / L[2]) : dz;
+      return out;
+    };
+  }
+  return (dx, dy, dz, out) => minImage(box, dx, dy, dz, out);
+}
+
+function buildGrid(pos, idx, cell, box = null) {
+  const periodic = !!box && box.periodic.some(Boolean);
   const cellOf = new Int32Array(idx.length);
-  const start = new Int32Array(nx * ny * nz + 1);
+  let g;
+  if (periodic) {
+    // Cells per box vector: as many as fit with a perpendicular width of at least `cell`.
+    const { a, b, c } = boxVectors(box);
+    const vol = Math.abs(a[0] * b[1] * c[2]);
+    const cross = (u, v) => Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]);
+    const heights = [vol / cross(b, c), vol / cross(c, a), vol / cross(a, b)];
+    let n = heights.map((h) => Math.max(1, Math.floor(h / cell)));
+    while (n[0] * n[1] * n[2] > MAX_CELLS) n = n.map((k) => Math.max(1, Math.floor(k / 1.5)));
+    const f = [0, 0, 0];
+    const ortho = box.tilt.every((t) => t === 0);
+    const lx = box.hi[0] - box.lo[0], ly = box.hi[1] - box.lo[1], lz = box.hi[2] - box.lo[2];
+    const cellIndex = (x, y, z, out) => {
+      if (ortho) { f[0] = (x - box.lo[0]) / lx; f[1] = (y - box.lo[1]) / ly; f[2] = (z - box.lo[2]) / lz; }
+      else frac(box, x - box.lo[0], y - box.lo[1], z - box.lo[2], f);
+      for (let d = 0; d < 3; d++) {
+        let u = box.periodic[d] ? f[d] - Math.floor(f[d]) : f[d];
+        let k = Math.floor(u * n[d]);
+        if (k >= n[d]) k = n[d] - 1;
+        if (k < 0) k = 0; // non-periodic dims: atoms outside the box share the edge cells
+        out[d] = k;
+      }
+      return out;
+    };
+    g = { periodic: true, nx: n[0], ny: n[1], nz: n[2], wrap: box.periodic, cellIndex };
+  } else {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let k = 0; k < idx.length; k++) {
+      const i = idx[k];
+      const x = pos[3 * i], y = pos[3 * i + 1], z = pos[3 * i + 2];
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    while (((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) * ((z1 - z0) / cell + 1) > MAX_CELLS) cell *= 1.5;
+    const nx = Math.floor((x1 - x0) / cell) + 1, ny = Math.floor((y1 - y0) / cell) + 1, nz = Math.floor((z1 - z0) / cell) + 1;
+    const cellIndex = (x, y, z, out) => {
+      out[0] = Math.min(Math.max(Math.floor((x - x0) / cell), 0), nx - 1);
+      out[1] = Math.min(Math.max(Math.floor((y - y0) / cell), 0), ny - 1);
+      out[2] = Math.min(Math.max(Math.floor((z - z0) / cell), 0), nz - 1);
+      return out;
+    };
+    g = { periodic: false, nx, ny, nz, wrap: [false, false, false], cellIndex };
+  }
+  const { nx, ny, nz } = g;
+  const nc = nx * ny * nz;
+  const start = new Int32Array(nc + 1);
+  const t = [0, 0, 0];
   for (let k = 0; k < idx.length; k++) {
     const i = idx[k];
-    const c = (Math.floor((pos[3 * i] - x0) / cell) * ny + Math.floor((pos[3 * i + 1] - y0) / cell)) * nz +
-      Math.floor((pos[3 * i + 2] - z0) / cell);
+    g.cellIndex(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2], t);
+    const c = (t[0] * ny + t[1]) * nz + t[2];
     cellOf[k] = c;
     start[c + 1]++;
   }
-  for (let c = 0; c < nx * ny * nz; c++) start[c + 1] += start[c];
-  const fill = start.slice(0, nx * ny * nz);
+  for (let c = 0; c < nc; c++) start[c + 1] += start[c];
+  const fill = start.slice(0, nc);
   const items = new Int32Array(idx.length);
   for (let k = 0; k < idx.length; k++) items[fill[cellOf[k]]++] = idx[k];
-  return { x0, y0, z0, cell, nx, ny, nz, start, items };
+  g.start = start; g.items = items;
+  g.tmp = [0, 0, 0];
+  g.sx = new Int32Array(3); g.sy = new Int32Array(3); g.sz = new Int32Array(3);
+  return g;
 }
 
-/** Calls fn(j) for grid atoms in the 27 cells around (x, y, z); stops early if fn returns true. */
+/**
+ * Neighbor cell indices along one dimension into `out` (wrapping if periodic, no repeats);
+ * returns how many. Preallocated outputs keep the per-query cost free of allocations.
+ */
+function span(k, n, wrap, out) {
+  if (wrap) {
+    if (n < 3) { out[0] = 0; out[1] = 1; return n; }
+    out[0] = k === 0 ? n - 1 : k - 1; out[1] = k; out[2] = k === n - 1 ? 0 : k + 1;
+    return 3;
+  }
+  let m = 0;
+  for (let j = Math.max(k - 1, 0); j <= Math.min(k + 1, n - 1); j++) out[m++] = j;
+  return m;
+}
+
+/** Calls fn(j) for grid atoms in the cells around (x, y, z); stops early if fn returns true. */
 function forNeighbors(g, x, y, z, fn) {
-  const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell), cz = Math.floor((z - g.z0) / g.cell);
-  const xa = Math.max(cx - 1, 0), xb = Math.min(cx + 1, g.nx - 1);
-  const ya = Math.max(cy - 1, 0), yb = Math.min(cy + 1, g.ny - 1);
-  const za = Math.max(cz - 1, 0), zb = Math.min(cz + 1, g.nz - 1);
-  const { start, items, ny, nz } = g;
-  for (let a = xa; a <= xb; a++) for (let b = ya; b <= yb; b++) {
-    const row = (a * ny + b) * nz;
-    for (let k = start[row + za], end = start[row + zb + 1]; k < end; k++) if (fn(items[k])) return;
+  const c = g.cellIndex(x, y, z, g.tmp);
+  const { sx, sy, sz, start, items, ny, nz } = g;
+  const mx = span(c[0], g.nx, g.wrap[0], sx), my = span(c[1], g.ny, g.wrap[1], sy), mz = span(c[2], g.nz, g.wrap[2], sz);
+  for (let i = 0; i < mx; i++) for (let j = 0; j < my; j++) {
+    const row = (sx[i] * ny + sy[j]) * nz;
+    for (let l = 0; l < mz; l++) {
+      const cc = row + sz[l];
+      for (let k = start[cc], end = start[cc + 1]; k < end; k++) if (fn(items[k])) return;
+    }
   }
 }
 
 /**
- * For each candidate atom, 1 if it lies within R of any reference atom (displayed coordinates).
- * Returns Uint8Array(n) with marks on candidates only.
+ * For each candidate atom, 1 if it lies within R of any reference atom. With a periodic `box`,
+ * distances use the minimum image. Returns Uint8Array(n) with marks on candidates only.
  */
-export function nearMask(pos, refIdx, candIdx, R, n) {
+export function nearMask(pos, refIdx, candIdx, R, n, box = null) {
   const out = new Uint8Array(n);
   if (!refIdx.length) return out;
-  const grid = buildGrid(pos, refIdx, R);
+  const delta = makeDelta(box);
+  const d = [0, 0, 0];
   const R2 = R * R;
+  if (refIdx.length < candIdx.length) {
+    // Few reference atoms (a solute in lots of water): grid the candidates and mark every
+    // candidate near each reference atom. Same result, far fewer queries.
+    const grid = buildGrid(pos, candIdx, R, box);
+    for (let k = 0; k < refIdx.length; k++) {
+      const i = refIdx[k];
+      const x = pos[3 * i], y = pos[3 * i + 1], z = pos[3 * i + 2];
+      forNeighbors(grid, x, y, z, (j) => {
+        if (out[j]) return false;
+        delta(pos[3 * j] - x, pos[3 * j + 1] - y, pos[3 * j + 2] - z, d);
+        if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < R2) out[j] = 1;
+        return false;
+      });
+    }
+    return out;
+  }
+  const grid = buildGrid(pos, refIdx, R, box);
   for (let k = 0; k < candIdx.length; k++) {
     const i = candIdx[k];
     const x = pos[3 * i], y = pos[3 * i + 1], z = pos[3 * i + 2];
     forNeighbors(grid, x, y, z, (j) => {
-      const dx = pos[3 * j] - x, dy = pos[3 * j + 1] - y, dz = pos[3 * j + 2] - z;
-      if (dx * dx + dy * dy + dz * dz < R2) { out[i] = 1; return true; }
+      delta(pos[3 * j] - x, pos[3 * j + 1] - y, pos[3 * j + 2] - z, d);
+      if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < R2) { out[i] = 1; return true; }
       return false;
     });
   }
@@ -77,7 +175,7 @@ const POLAR = new Set(['N', 'O', 'F']);
 /**
  * Donor hydrogens (H bonded to N/O/F) as pairs [h, donor], and acceptor atoms.
  *
- * O and F always accept. N accepts only if it has a lone pair free to take an H-bond:
+ * F always accepts; O accepts with up to 2 bonds (3-bonded O such as H3O+ is skipped). N accepts only if it has a lone pair free to take an H-bond:
  *  - 4 bonds (ammonium, e.g. glycine's NH3+): no lone pair, not an acceptor.
  *  - 3 bonds and planar (amide, aromatic or methylated ring N such as caffeine's N1/N3/N7): the
  *    lone pair is delocalized into the pi system, so it is at best a very weak acceptor; excluded.
@@ -106,7 +204,8 @@ export function hbondParticipants(elements, bonds, frames = null) {
   const acc = [];
   for (let i = 0; i < n; i++) {
     const e = elements[i];
-    if (e === 'O' || e === 'F') acc.push(i);
+    if (e === 'F') acc.push(i);
+    else if (e === 'O') { if (deg[i] <= 2) acc.push(i); } // 3-bonded O (e.g. H3O+) is skipped
     else if (e === 'N') {
       if (deg[i] >= 4) continue;
       if (deg[i] === 3 && frames && frames.length && nitrogenHeight(frames, i, nbr.get(i)) < N_PLANAR) continue;
@@ -141,22 +240,27 @@ function nitrogenHeight(frames, i, nb) {
 
 /**
  * H-bonds D–H···A with H···A ≤ maxHA (Å) and angle D–H···A ≥ minAngle (degrees).
- * `keep(h, d, a)` filters candidates (visibility, solute-only...). Returns Int32Array of [h, a] pairs.
+ * `keep(h, d, a)` filters candidates (visibility, solute-only...). With a periodic `box`, H···A
+ * contacts across the box edge count (minimum image). Returns Int32Array of [h, a] pairs.
  */
-export function findHBonds(pos, { hd, acc }, { maxHA = 2.5, minAngle = 120, keep = null } = {}) {
+export function findHBonds(pos, { hd, acc }, { maxHA = 2.5, minAngle = 120, keep = null, box = null } = {}) {
   if (!hd.length || !acc.length) return new Int32Array(0);
   const out = [];
-  const grid = buildGrid(pos, acc, maxHA);
+  const grid = buildGrid(pos, acc, maxHA, box);
+  const delta = makeDelta(box);
+  const u = [0, 0, 0], v = [0, 0, 0];
   const max2 = maxHA * maxHA;
   const cosMin = Math.cos((minAngle * Math.PI) / 180);
   for (let k = 0; k < hd.length; k += 2) {
     const h = hd[k], d = hd[k + 1];
     const hx = pos[3 * h], hy = pos[3 * h + 1], hz = pos[3 * h + 2];
-    const ux = pos[3 * d] - hx, uy = pos[3 * d + 1] - hy, uz = pos[3 * d + 2] - hz;
+    delta(pos[3 * d] - hx, pos[3 * d + 1] - hy, pos[3 * d + 2] - hz, u);
+    const [ux, uy, uz] = u;
     const ul = Math.hypot(ux, uy, uz) || 1;
     forNeighbors(grid, hx, hy, hz, (a) => {
       if (a === d) return false;
-      const vx = pos[3 * a] - hx, vy = pos[3 * a + 1] - hy, vz = pos[3 * a + 2] - hz;
+      delta(pos[3 * a] - hx, pos[3 * a + 1] - hy, pos[3 * a + 2] - hz, v);
+      const vx = v[0], vy = v[1], vz = v[2];
       const v2 = vx * vx + vy * vy + vz * vz;
       if (v2 > max2 || v2 < 0.25) return false;
       // Angle at H between D and A: cos ≤ cos(minAngle) means the angle is wide enough.

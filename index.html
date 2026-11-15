@@ -112,8 +112,7 @@
   body.mode-explore details[data-sec="lesson"] { display: none; }
   body.mode-explore #caption { display: none !important; }
   #ui.collapsed #modeBox { display: none; }
-  #bar #VRButton { position: static !important; width: auto !important; padding: 6px 12px !important;
-    font-size: 12px !important; border-radius: 6px !important; opacity: 1 !important; }
+  #vrBtn { font-weight: 600; white-space: nowrap; }
   #bar:not(.loaded) .needs-traj { opacity: .45; pointer-events: none; }
 
   #caption { position: fixed; left: 50%; bottom: calc(var(--bar-h) + 28px); transform: translateX(-50%);
@@ -132,7 +131,7 @@
     #bar .speed, #frameInfo { display: none; }
     #caption { font-size: 15px; left: 12px; right: 12px; transform: none; max-width: none; }
     #bar .lbl { display: none; }
-    #bar #VRButton { padding: 6px 8px !important; }
+    #vrBtn { padding: 5px 8px; }
     #barRight { margin-left: auto; }
   }
 </style>
@@ -162,7 +161,8 @@
       <button id="modeExplore" class="on" aria-pressed="true" title="Look around freely; lesson stops are ignored">Explore</button>
       <button id="modeLesson" aria-pressed="false" title="Play the lesson: stops set the view, show captions and pause">Lesson<span id="modeLessonN"></span></button>
     </div>
-    <p class="hint mode-hint explore">Explore freely: change anything, lesson stops are ignored.</p>
+    <p class="hint mode-hint explore">Explore freely: change anything, lesson stops are ignored.
+      <button id="saveMoment" class="adv" style="margin-top:6px" title="Keep this frame, camera, selection and settings as a lesson stop">＋ Save this moment as a lesson stop</button></p>
     <p class="hint mode-hint lesson">Playing the lesson: each stop sets the view and shows its caption.
       <span class="adv">Add or edit stops below.</span></p>
   </div>

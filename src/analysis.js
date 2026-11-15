@@ -11,7 +11,7 @@ export function boxVectors(box) {
 }
 
 /** Fractional coordinates of a displacement (dx,dy,dz) in the box (upper-triangular h). */
-function frac(box, dx, dy, dz, out) {
+export function frac(box, dx, dy, dz, out) {
   const lx = box.hi[0] - box.lo[0], ly = box.hi[1] - box.lo[1], lz = box.hi[2] - box.lo[2];
   const [xy, xz, yz] = box.tilt;
   const fz = dz / lz;

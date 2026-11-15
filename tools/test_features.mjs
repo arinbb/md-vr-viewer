@@ -117,3 +117,42 @@ console.log('extra column tests passed');
   assert.deepEqual([...hbondParticipants(el, bonds).acc], [0, 4, 13], 'without coordinates, 3-bonded N accepts');
   console.log('acceptor rule tests passed');
 }
+
+// --- Contacts across the periodic boundary
+{
+  const L = 20;
+  const ortho = { lo: [0, 0, 0], hi: [L, L, L], tilt: [0, 0, 0], periodic: [true, true, true] };
+  // Water A near x = 0, water B near x = L: the H-bond O_A-H...O_B crosses the box face.
+  // O_A at x=1.2 with H pointing toward -x (H at 0.24); O_B at x = 18.3 (1.9 Å from H through the face).
+  const pos = Float32Array.from([
+    1.2, 10, 10, 0.24, 10, 10, 1.44, 10.93, 10,      // water A: O, H (toward -x), H
+    18.3, 10, 10, 18.06, 10.93, 10, 18.06, 9.53, 10.82, // water B
+  ]);
+  const el = ['O', 'H', 'H', 'O', 'H', 'H'];
+  const bonds = [0, 1, 0, 2, 3, 4, 3, 5];
+  const hb = hbondParticipants(el, bonds);
+  assert.equal(findHBonds(pos, hb).length, 0, 'without the box, the contact across the face is missed');
+  const pairs = findHBonds(pos, hb, { box: ortho });
+  assert.deepEqual([...pairs], [1, 3], 'with the box, H1...O_B is found across the face');
+  // Shell: water B is within 4 Å of atom 0 only through the boundary.
+  assert.equal(nearMask(pos, [0], [3, 4, 5], 4, 6)[3], 0, 'no box: B is not near');
+  assert.equal(nearMask(pos, [0], [3, 4, 5], 4, 6, ortho)[3], 1, 'box: B is near through the face');
+  // The other search direction (more reference atoms than candidates) must agree.
+  assert.equal(nearMask(pos, [3, 4, 5], [0], 4, 6, ortho)[0], 1, 'box, reversed roles: A is near B');
+  assert.equal(nearMask(pos, [3, 4, 5], [0], 4, 6)[0], 0, 'no box, reversed roles: A is not near B');
+  // Triclinic box (xy tilt): shift the whole picture by a lattice vector b and it must still match.
+  const tri = { lo: [0, 0, 0], hi: [L, L, L], tilt: [5, 0, 0], periodic: [true, true, true] };
+  assert.deepEqual([...findHBonds(pos, hb, { box: tri })], [1, 3], 'triclinic: found across the x face');
+  const shifted = Float32Array.from(pos);
+  for (let i = 3; i < 6; i++) { shifted[3 * i] += 5; shifted[3 * i + 1] += L; } // water B moved by +b
+  assert.deepEqual([...findHBonds(shifted, hb, { box: tri })], [1, 3], 'triclinic: an image shifted by b is the same contact');
+  // Small box (fewer than 3 cells per side) must not double-count.
+  const small = { lo: [0, 0, 0], hi: [6, 6, 6], tilt: [0, 0, 0], periodic: [true, true, true] };
+  const p2 = Float32Array.from([1, 3, 3, 0.04, 3, 3, 1.24, 3.93, 3, 4.1, 3, 3, 4.34, 3.93, 3, 4.34, 2.53, 3.82]);
+  const r2 = findHBonds(p2, hb, { box: small });
+  assert.equal(new Set(Array.from({ length: r2.length / 2 }, (_, k) => r2[2 * k] + ':' + r2[2 * k + 1])).size, r2.length / 2, 'no duplicate pairs in a small box');
+  // 3-bonded O (hydronium) is not an acceptor.
+  const h3o = hbondParticipants(['O', 'H', 'H', 'H'], [0, 1, 0, 2, 0, 3]);
+  assert.equal(h3o.acc.length, 0, 'H3O+ oxygen does not accept');
+  console.log('periodic contact tests passed');
+}

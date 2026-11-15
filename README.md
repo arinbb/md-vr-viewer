@@ -44,7 +44,8 @@ WebXR only runs on `https://` pages or `localhost`.
      and Edge use whatever OpenXR runtime is active.
   3. Put on the Quest, open Virtual Desktop and connect to the PC.
   4. From the streamed desktop, open `http://localhost:8137/?sample` in Chrome. If the
-     button says *VR NOT SUPPORTED*, reload the page now that the headset is connected.
+     button says *No headset*, reload the page now that the headset is connected (hover
+     the button for tips).
   5. Click **Enter VR**. The system appears floating about 0.7 m in front of you at
      chest height; grip with a controller to grab it.
 
@@ -147,7 +148,8 @@ frame), costing a few ms even with thousands of H-bonds.
   atom within the shell radius of a non-water atom, recomputed as molecules move), or
   *Hide*. (*Near solute* is disabled for pure water, where there is nothing to be near.)
 - **Hydrogen bonds:** dashed lines for D–H···A where H···A ≤ 2.5 Å and the D–H···A angle
-  ≥ 120°. Donors are H on N/O/F. Acceptors are O, F and N with a free lone pair: N with
+  ≥ 120°, including across the periodic box edge. Donors are H on N/O/F. Acceptors are F,
+  O with up to two bonds (not H₃O⁺), and N with a free lone pair: N with
   four bonds (e.g. NH₃⁺) and planar N with three bonds (amide, aromatic or methylated ring N,
   like caffeine's N1/N3/N7) are not counted, since their lone pair is tied up. *With solute* shows only H-bonds that involve a
   non-water molecule; *All shown atoms* includes water–water ones. The count is shown.
@@ -173,7 +175,7 @@ frame), costing a few ms even with thousands of H-bonds.
   the **Explore / Lesson** switch, then *File* (open, stride, atom types), *Appearance*,
   *Water & H-bonds*, *Select & measure*, *Lesson*, *Advanced* and *Controls & help*. The
   File section folds itself away after a file loads, unless atom types need checking.
-  The – button hides the whole panel.
+  The – button hides the whole panel; on a phone it folds itself after loading.
 - **Playback bar** (bottom, like a video player): step, play, the frame slider, frame and
   time, speed, previous/next lesson stop (Lesson mode), reset view, screenshot and
   **Enter VR**.
@@ -185,6 +187,8 @@ frame), costing a few ms even with thousands of H-bonds.
 - **Lesson** plays the stops: when playback reaches one, it sets the view and settings and
   shows its caption (and pauses, if *Pause at each stop* is on). Stops are authored in this
   mode too. The sample and share links with stops open in Lesson.
+- Found a good moment while exploring? **＋ Save this moment as a lesson stop** switches
+  to Lesson without touching the view and opens the caption box.
 - Switching back to Lesson restores the stop for the current frame, so a student who
   wandered off in Explore is put back on track. <kbd>N</kbd>/<kbd>B</kbd> (or the stop
   buttons) switch to Lesson automatically.
@@ -271,8 +275,9 @@ tools/test_features.mjs columns, gzip, guessing, H-bond, shell tests:  node tool
   frame cap.
 - Element guessing covers common organic and biomolecular chemistry (H, C, N, O, S, P,
   water). Ions and unusual elements stay unknown; pick them in the table.
-- H-bonds and the water shell use the displayed coordinates, so contacts across a periodic
-  boundary are not counted, matching what is on screen.
+- H-bonds and the water shell are periodic: contacts across the box edge count (minimum
+  image), so a shell water can appear at the opposite face from its solute, and such
+  H-bonds are drawn as short dashes poking out of the box toward the partner's image.
 - Lesson stops in VR don't move the view (only on desktop); the student stays where they
   are.
 - Not yet started: recorded voice narration, video export, a multi-user/instructor-driven

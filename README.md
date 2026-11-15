@@ -1,0 +1,232 @@
+# MD Trajectory VR Viewer (prototype)
+
+A browser-based viewer for **LAMMPS** trajectories that works on a laptop *and* in VR
+headsets (WebXR). Load a dump file (plus an optional data file), then play, rotate,
+grab and inspect atoms. See [SCOPING.md](SCOPING.md) for why WebXR, how it compares to
+VMD/Godot/Unity/Unreal, and questions for the lab.
+
+## Run it
+
+You need any static web server; nothing to install or build.
+
+```bash
+python -m http.server 8137
+```
+
+Then open http://localhost:8137 and click **Load sample** (or open
+`http://localhost:8137/?sample`). The sample opens with a six-stop guided tour (captions,
+solvation shell, H-bonds, a distance plot); use **Next stop** or press play. The tour lives in
+`samples/sample.lesson.json` and is a good template for your own lessons.
+
+### In a headset
+
+WebXR only runs on `https://` pages or `localhost`.
+
+- **PC VR (Quest Link / SteamVR):** open the localhost URL in Chrome or Edge on the PC
+  and click **Enter VR**.
+- **Quest via Virtual Desktop (wireless PC VR, the setup on the dev machine):**
+  1. Start the server on the PC (above) and keep it running.
+  2. In Virtual Desktop's streamer settings, set the OpenXR runtime to **VDXR**. Chrome
+     and Edge use whatever OpenXR runtime is active.
+  3. Put on the Quest, open Virtual Desktop and connect to the PC.
+  4. From the streamed desktop, open `http://localhost:8137/?sample` in Chrome. If the
+     button says *VR NOT SUPPORTED*, reload the page now that the headset is connected.
+  5. Click **Enter VR**. The system appears floating about 0.7 m in front of you at
+     chest height; grip with a controller to grab it.
+
+  If Chrome still reports VR as unsupported, try Edge, or switch the runtime to SteamVR
+  (with SteamVR running) as a fallback.
+- **Quest standalone, during development:** connect the headset by USB with developer
+  mode on, then run the command below and open `http://localhost:8137` in the Quest
+  browser:
+
+  ```bash
+  adb reverse tcp:8137 tcp:8137
+  ```
+
+- **Classroom:** host the folder on any HTTPS static host (GitHub Pages, university
+  web space). Students just open the URL.
+
+**No headset?** Open `http://localhost:8137/?sample&emulate`. This loads Meta's WebXR emulator
+(IWER) into the page, so *Enter VR* works in any desktop browser with a simulated Quest 3.
+
+### Open a trajectory from a link
+
+Put the files next to `index.html` (or anywhere the page can fetch them) and share a URL:
+
+```
+index.html?traj=runs/peptide.lammpstrj&data=runs/peptide.data&map=1:C+2:H+3:O+4:N&fs=2&stride=5
+```
+
+`traj` and `data` are file URLs, `map` is the type→element mapping, `fs` is the LAMMPS
+timestep size in femtoseconds (shows simulated time), and `stride` loads every Nth frame.
+This is the easiest way to hand students a ready-to-go scene.
+
+You don't have to write these by hand: set up the view, add lesson stops, and click
+**Copy share link** (see *Lessons* below). Other link options:
+
+| Parameter | Values |
+|---|---|
+| `rep` | `ballstick`, `spacefill`, `licorice` |
+| `color` | `element`, `type`, `mol`, `mag:v` (speed), `mag:f` (force magnitude), `p:<column>` (e.g. `p:q`) |
+| `water` / `shell` | `all`, `near` (solvation shell), `hide` / shell radius in Å |
+| `hb` | `off`, `solute`, `all` (hydrogen bonds) |
+| `arrows` | a vector column family: `v`, `f`, `mu`, or a compute name like `c_myforce` |
+| `stops` | lesson stops (written by *Copy share link*) |
+| `student` | no value; hides loading, atom-type and expert controls |
+
+## Supported input
+
+| File | Notes |
+|---|---|
+| `dump custom` / `dump atom` (`.lammpstrj`, `.dump`, any name) | Needs `id`, `type` or `element`, and coordinates. Uses `xu yu zu` > `x y z` (+ `ix iy iz` image flags, unwrapped automatically) > `xs ys zs` / `xsu ysu zsu`. Optional `mol`, `element`. Any other columns (`vx vy vz`, `fx fy fz`, `q`, `c_pe`, `c_name[1]`…) are kept per frame for coloring and arrows. Orthogonal and triclinic boxes. Atoms may be reordered between frames (matched by `id`). |
+| Gzipped versions of any of these (`.gz`, e.g. `dump custom/gz`) | Decompressed in the browser while streaming. |
+| `dump xyz` | Constant atom order assumed; no box. |
+| LAMMPS data file (`.data`, `.lmp`, `data.*`) | Optional. Provides **Bonds**, **Masses** (used to guess elements from numeric types), type labels and molecule-IDs. |
+
+Recommended dump command for best results:
+
+```
+dump 1 all custom 1000 traj.lammpstrj id mol type element xu yu zu vx vy vz
+dump_modify 1 sort id element C H O N   # element names per type, if you use them
+```
+
+**Elements** are picked in this order: the "Map numeric types" box (e.g. `1:C 2:H 3:O`)
+> the dump's `element` column > data-file type labels > data-file masses > a type name
+that looks like an element. If types are still unknown (a bare dump with numbered types),
+the viewer **guesses them from bond geometry**: hydrogens from short X–H contacts, O/N/C
+from their X–H lengths, coordination and bond lengths, and C vs N in rings by checking
+which choice gives every sp2 atom a double-bond partner. Guesses are marked *guessed* in the
+*Atom types* table (uncertain ones with *?*, hover for the reason), and a note under the
+status line says how many were guessed. Each type has a dropdown to correct it, and the
+mapping goes into share links. **Guess elements from structure** re-runs it on demand. On the caffeine-in-water test file all 26 types come out
+right.
+
+**Bonds** come from the data file if it has a `Bonds` section; otherwise they are
+inferred from covalent radii on the first, middle and last frames. A bond is kept if it shows
+up in at least two of them, so overlaps in an unequilibrated starting structure don't create
+fake bonds. Bonds that cross periodic boundaries are found too (within the same molecule when
+molecule-IDs are known). For reactive force
+fields (ReaxFF) tick **Recompute bonds every frame**. This costs ~30 ms per frame change
+at 24k atoms, which is fine on desktop but can stutter in VR on big systems.
+
+**Keep molecules whole, inside box** (on by default) undoes periodic splitting every frame:
+each molecule is reassembled along its bonds (or around its first atom when only
+molecule-IDs are known), then shifted so its center lies in the box. It works for wrapped,
+unwrapped and image-flag dumps alike.
+
+**Large files** are streamed in chunks, so files bigger than a browser string are fine. If
+the frames won't fit in memory (≈2 GB desktop, 0.8 GB Quest browser at 12 bytes/atom/frame),
+the viewer automatically loads every Nth frame and says so. You can also set **Load every
+Nth frame** yourself. Measured: a 47 MB, 24k-atom, 60-frame dump loads in 0.4 s and plays
+at 60 fps on desktop. Extra columns cost 4 bytes/atom/frame each and count toward the same
+budget. The water shell and H-bond searches run once per data frame (not per display
+frame), costing a few ms even with thousands of H-bonds.
+
+## Teaching tools
+
+- **Measure:** click an atom, then shift-click up to 3 more for a live distance, angle or
+  dihedral. In VR, trigger successive atoms. Values update as the trajectory plays.
+- **Paths:** tick *Show paths of selected atoms* to trace where they have been. This is
+  good for showing diffusion, and paths stay continuous across periodic boundaries.
+- **Water:** *Show all*, *Near solute only* (the solvation shell: water molecules with any
+  atom within the shell radius of a non-water atom, recomputed as molecules move), or
+  *Hide*. (*Near solute* is disabled for pure water, where there is nothing to be near.)
+- **Hydrogen bonds:** dashed lines for D–H···A where H···A ≤ 2.5 Å and the D–H···A angle
+  ≥ 120°, for N/O/F donors and acceptors. *With solute* shows only H-bonds that involve a
+  non-water molecule; *All shown atoms* includes water–water ones. The count is shown.
+  They are drawn as short cyan dashes (3D cylinders, so they stay visible in a headset).
+- **Color by data:** any extra dump column (charge, per-atom energy...) or a vector's
+  magnitude (speed, force) on a viridis scale, or a blue–white–red scale for signed values,
+  with a legend. Ranges use the 2nd–98th percentile over the whole trajectory, so one
+  outlier doesn't wash out the colors.
+- **Arrows:** velocity, force or any 3-component column as arrows on each shown atom,
+  auto-scaled so a typical vector is ~1.5 Å long, with a length slider.
+- **Measurement plot:** with 2–4 atoms selected, a graph of the distance, angle or dihedral
+  over the whole trajectory with a marker at the current frame. Click it to jump (in VR
+  the plot on the wrist menu works as a timeline too).
+- **Find atom-ID:** type an ID from a LAMMPS input or log to jump to that atom.
+- **Simulated time:** enter the timestep size (fs) to show t = … ps/ns next to the frame.
+- **Screenshot** button (or <kbd>P</kbd>) saves the current view as a PNG for slides
+  or handouts.
+- Display settings (style, colors, sizes, speed, timestep size) are remembered per browser.
+
+## Lessons (narration over time)
+
+A **stop** ties a caption to a frame, together with the camera, the selected atoms and the
+display settings (style, coloring, water, H-bonds, arrows, paths) at that moment.
+
+- **Make one:** go to the moment, set up the view, type a caption and click **Add stop
+  here**. **Update stop** overwrites the highlighted one; ✕ deletes. Stops are kept in
+  frame order.
+- **During playback** the latest caption at or before the current frame is shown on screen
+  and in the VR wrist menu. When playback reaches a stop, its settings and selection are
+  applied, and with *Pause at stops* on, playback pauses so a student can read and look
+  around.
+- **Navigate:** ◀ Stop / Stop ▶ buttons, <kbd>B</kbd>/<kbd>N</kbd> on the keyboard, the stop buttons
+  on the VR menu, or left stick up/down in VR. Stops show as yellow ticks on the VR timeline.
+- **Share:** **Copy share link** produces a URL with the file, element mapping, display
+  settings and all stops. With *student mode* ticked, the link hides the loading,
+  atom-type and editing controls. If you opened a local file, put it next to `index.html` on
+  the server under the same name.
+
+## Controls
+
+- **Desktop:** drag to rotate, scroll to zoom, right-drag to pan, click an atom to
+  inspect it, shift-click to measure, double-click (or <kbd>F</kbd>) to orbit around it.
+  <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> step, <kbd>Esc</kbd> clear selection,
+  <kbd>R</kbd> reset view, <kbd>P</kbd> screenshot, <kbd>N</kbd>/<kbd>B</kbd> next/previous stop.
+- **VR:** on entering, the system appears about 0.75 m in front of you, just below eye
+  level, wherever you are standing or sitting.
+  - **Wrist menu** (on the left controller, always turned toward your eyes): point with the
+    right controller and pull the trigger to play/pause, step, drag the timeline, reset the
+    view, step through lesson stops, and switch style, coloring, water, H-bonds, arrows and
+    paths. Its middle panel shows the current stop's caption, else the measurement plot.
+  - **Grip** to grab and move the system; **both grips** to scale and rotate it.
+  - **Trigger** on atoms to pick them (up to 4 for measuring; trigger on empty space clears).
+    The ray stops on whatever it is pointing at.
+  - Shortcuts: A/X play/pause, B/Y style, thumbstick click re-centers the view, right stick
+    ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop (cycles the
+    water display when there are no stops).
+  - Hand tracking: pinch to pick, pinch-grab to move.
+
+## Layout
+
+How the pieces fit together (libraries, modules, data flow, algorithms, VR
+interaction, testing, how to extend it) is documented in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+```
+index.html            UI + import map (three.js 0.169 from jsDelivr)
+src/main.js           rendering, playback, desktop + VR interaction
+src/lammps.js         dump / xyz / data-file parsers (runs in browser and Node)
+src/model.js          element resolution, periodic bond inference, radii, box geometry
+src/analysis.js       make-whole/wrap, measurements, atom paths, water detection
+src/chem.js           element guessing, solvation-shell masks, hydrogen bonds
+src/props.js          extra dump columns: vector detection, color ranges, colormaps
+src/elements.js       element colors / radii / masses
+src/parse-worker.js   streams (and gunzips) files off the main thread (memory guard)
+tools/make_sample.py  writes samples/sample.lammpstrj + sample.data (synthetic, not physical)
+samples/sample.lesson.json  the sample's guided tour (lesson stops, same format as share links)
+tools/test_parser.mjs   parser, bond and wrapping tests:  node tools/test_parser.mjs
+tools/test_features.mjs columns, gzip, guessing, H-bond, shell tests:  node tools/test_features.mjs
+```
+
+## Known limitations / next steps
+
+- VR has been tested in the IWER emulator (menu, timeline, picking, one/two-hand grab,
+  buttons, sticks), but not yet in a real headset. Comfort, menu size and placement need
+  a real try-on.
+- Reactive mode re-infers bonds from distances only (no bond orders). Molecule coloring
+  and the water modes use the initial topology.
+- Positions are held in memory as float32. For very long trajectories, a preprocessing
+  step to a compact binary format (with on-demand frame streaming) would remove the
+  frame cap.
+- Element guessing covers common organic and biomolecular chemistry (H, C, N, O, S, P,
+  water). Ions and unusual elements stay unknown; pick them in the table.
+- H-bonds and the water shell use the displayed coordinates, so contacts across a periodic
+  boundary are not counted, matching what is on screen.
+- Lesson stops in VR don't move the view (only on desktop); the student stays where they
+  are.
+- Not yet started: recorded voice narration, video export, a multi-user/instructor-driven
+  mode.

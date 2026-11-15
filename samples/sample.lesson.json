@@ -1,0 +1,38 @@
+[
+  {
+    "f": 0,
+    "cap": "Welcome! This box holds 3 glycine molecules (the simplest amino acid) in 90 waters. Colors: red O, white H, grey C, blue N. The motion is a synthetic demo, not a real simulation. Press play, or use Next stop.",
+    "sel": [],
+    "v": { "rep": "ballstick", "color": "element", "water": "all", "hb": "off", "arrows": "", "paths": false }
+  },
+  {
+    "f": 15,
+    "cap": "Each molecule now has its own color. Find the three glycines among the waters. Each is a chain N–C–C with two O on the end.",
+    "sel": [],
+    "v": { "rep": "ballstick", "color": "mol", "water": "all", "hb": "off", "arrows": "", "paths": false }
+  },
+  {
+    "f": 30,
+    "cap": "Bulk water is hidden. Only waters within 4 Å of a glycine are shown: this is the solvation shell. Watch waters join and leave it as you play.",
+    "sel": [],
+    "v": { "rep": "ballstick", "color": "element", "water": "near", "hb": "off", "arrows": "", "paths": false }
+  },
+  {
+    "f": 50,
+    "cap": "Cyan dashes are hydrogen bonds between glycine and water (H···O or H···N at most 2.5 Å, angle at least 120°). Which glycine atoms make the most H-bonds?",
+    "sel": [],
+    "v": { "rep": "ballstick", "color": "element", "water": "near", "hb": "solute", "arrows": "", "paths": false }
+  },
+  {
+    "f": 75,
+    "cap": "Two glycine N atoms are selected. The plot shows their distance over the whole run (click it to jump to a frame), and the paths show where each one went.",
+    "sel": [1, 11],
+    "v": { "rep": "ballstick", "color": "element", "water": "hide", "hb": "off", "arrows": "", "paths": true }
+  },
+  {
+    "f": 119,
+    "cap": "End of the tour. Try other styles, pick atoms yourself, or press Enter VR to walk around the box.",
+    "sel": [],
+    "v": { "rep": "ballstick", "color": "element", "water": "all", "hb": "off", "arrows": "", "paths": false }
+  }
+]

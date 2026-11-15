@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MD Trajectory VR Viewer</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: rgba(22, 27, 34, 0.94); --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  #viewport { position: fixed; inset: 0; }
+  #ui { position: fixed; top: 12px; left: 12px; width: 300px; max-height: calc(100% - 24px); overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; z-index: 2; }
+  #ui.collapsed > :not(header) { display: none !important; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  h1 { font-size: 15px; margin: 0; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
+  label.check { justify-content: flex-start; }
+  select, input[type=text], input[type=number] { background: #0d1117; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 6px; font: inherit; }
+  input[type=text] { width: 100%; }
+  input[type=number] { width: 64px; }
+  input[type=range] { flex: 1; min-width: 0; }
+  button { background: #21262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { padding: 2px 4px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+  #warnings { color: var(--warn); font-size: 12px; }
+  #atomInfo { font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre; }
+  #status { font-size: 12px; color: var(--muted); }
+  #drop { position: fixed; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center;
+    background: rgba(31, 111, 235, .25); border: 3px dashed var(--accent); font-size: 20px; }
+  #drop.show { display: flex; }
+  #VRButton { z-index: 3; }
+  td select { padding: 1px 2px; font-size: 12px; }
+  .legend { height: 10px; border-radius: 3px; margin: 4px 0 2px; }
+  .legend-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  #plotWrap { margin-top: 6px; display: none; }
+  #plot { width: 100%; height: 110px; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; cursor: crosshair; }
+  #stopList { list-style: none; margin: 4px 0; padding: 0; max-height: 160px; overflow-y: auto; }
+  #stopList li { display: flex; gap: 6px; align-items: baseline; padding: 3px 4px; border-radius: 5px; cursor: pointer; }
+  #stopList li:hover { background: #21262d; }
+  #stopList li.active { background: #1c3a5e; }
+  #stopList .f { color: var(--muted); font-size: 11px; min-width: 44px; }
+  #stopList .x { margin-left: auto; color: var(--muted); padding: 0 4px; }
+  #stopCaption { width: 100%; resize: vertical; min-height: 44px; background: #0d1117; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font: inherit; }
+  #caption { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); max-width: min(720px, calc(100% - 40px));
+    background: rgba(13,17,23,0.9); border: 1px solid #58a6ff; border-radius: 10px; padding: 10px 16px;
+    font-size: 17px; line-height: 1.4; z-index: 2; display: none; text-align: center; }
+  #caption.show { display: block; }
+  @media (min-width: 900px) { #caption { left: calc(50% + 160px); max-width: min(680px, calc(100% - 380px)); } }
+  #caption .n { color: var(--muted); font-size: 12px; display: block; margin-bottom: 2px; }
+  body.student .adv { display: none !important; }
+  body.student #caption { font-size: 20px; }
+  kbd { background: #21262d; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 11px; }
+  @media (max-width: 600px) { #ui { width: calc(100% - 24px); max-height: 55%; } }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="viewport"></div>
+<div id="caption"></div>
+<div id="drop">Drop a LAMMPS dump (and optional data file)</div>
+
+<div id="ui">
+  <header>
+    <h1>MD Trajectory Viewer</h1>
+    <button id="collapse" title="Hide/show panel">–</button>
+  </header>
+
+  <h2 class="adv">Load</h2>
+  <div class="row adv">
+    <input id="fileInput" type="file" multiple hidden>
+    <button class="primary" id="openBtn">Open files…</button>
+    <button id="sampleBtn">Load sample</button>
+  </div>
+  <p class="muted small adv">Dump (<code>dump custom/atom/xyz</code>, also <code>.gz</code>) plus an optional
+    LAMMPS <b>data file</b> for bonds, masses and molecule-IDs. Drag-and-drop works too.</p>
+  <label class="adv">Load every Nth frame <input id="stride" type="number" min="1" value="1"></label>
+  <div id="status">No trajectory loaded.</div>
+  <div id="warnings"></div>
+
+  <h2 class="adv">Atom types</h2>
+  <table id="typeTable" class="adv"><tr><td class="muted">—</td></tr></table>
+  <div class="row adv" style="margin-top:6px">
+    <button id="guessBtn" title="Infer elements from bond lengths and bonding patterns">Guess elements from structure</button>
+  </div>
+  <label class="adv" style="display:block">Map numeric types to elements
+    <input id="typeMap" type="text" placeholder="e.g. 1:C 2:H 3:O 4:N" spellcheck="false">
+  </label>
+
+  <h2>Display</h2>
+  <label>Style
+    <select id="rep">
+      <option value="ballstick">Ball &amp; stick</option>
+      <option value="spacefill">Space-filling</option>
+      <option value="licorice">Licorice</option>
+    </select>
+  </label>
+  <label>Color by
+    <select id="colorBy">
+      <option value="element">Element</option>
+      <option value="type">Atom type</option>
+      <option value="mol">Molecule</option>
+    </select>
+  </label>
+  <div id="legendWrap" style="display:none">
+    <div id="legend" class="legend"></div>
+    <div class="legend-labels"><span id="legendMin"></span><span id="legendName"></span><span id="legendMax"></span></div>
+  </div>
+  <label>Atom size <input id="atomScale" type="range" min="0.3" max="2" step="0.05" value="1"></label>
+  <label>Water <span id="hideWaterInfo" class="muted small" style="margin-right:auto"></span>
+    <select id="water">
+      <option value="all">Show all</option>
+      <option value="near">Near solute only</option>
+      <option value="hide">Hide</option>
+    </select>
+  </label>
+  <label id="shellRow" style="display:none" title="Show water molecules with any atom this close to a non-water atom">Shell radius (Å)
+    <input id="shellR" type="number" min="1" max="15" step="0.5" value="4"></label>
+  <label title="Dashed lines for D–H···A with H···A ≤ 2.5 Å and angle ≥ 120°">Hydrogen bonds <span id="hbInfo" class="muted small" style="margin-right:auto"></span>
+    <select id="hbonds">
+      <option value="off">Off</option>
+      <option value="solute">With solute</option>
+      <option value="all">All shown atoms</option>
+    </select>
+  </label>
+  <label id="arrowsRow" style="display:none">Arrows
+    <select id="arrows"><option value="">None</option></select>
+  </label>
+  <label id="arrowScaleRow" style="display:none">Arrow length <input id="arrowScale" type="range" min="0.2" max="4" step="0.1" value="1"></label>
+  <label class="check adv"><input id="showBonds" type="checkbox" checked> Bonds <span id="bondInfo" class="muted small"></span></label>
+  <label class="check"><input id="showBox" type="checkbox" checked> Simulation box</label>
+  <label class="check adv"><input id="smooth" type="checkbox" checked> Smooth between frames</label>
+  <label class="check adv" title="Unbroken molecules, wrapped back into the periodic box"><input id="wrap" type="checkbox" checked> Keep molecules whole, inside box</label>
+  <label class="check adv" title="For reactive force fields (e.g. ReaxFF) where bonds form and break"><input id="dynBonds" type="checkbox"> Recompute bonds every frame (reactive MD)</label>
+  <div class="row" style="margin-top:6px">
+    <button id="resetView" title="Shortcut: R">Reset view</button>
+    <button id="shotBtn" title="Save the current view as a PNG (shortcut: P)">Screenshot</button>
+  </div>
+
+  <h2>Playback</h2>
+  <div class="row">
+    <button id="playBtn" style="width:70px">Play</button>
+    <input id="frame" type="range" min="0" max="0" step="1" value="0" style="flex:1">
+  </div>
+  <div id="frameInfo" class="small muted">frame – / –</div>
+  <label>Speed (frames/s) <input id="fps" type="range" min="1" max="60" step="1" value="12"></label>
+  <label class="adv" title="The LAMMPS 'timestep' setting, to show simulated time (e.g. 1 or 2 fs for real units)">Timestep size (fs)
+    <input id="fsPerStep" type="number" min="0" step="any" placeholder="—"></label>
+
+  <h2>Selection &amp; measurement</h2>
+  <div id="atomInfo" class="muted">Click an atom. Shift-click up to 4 atoms to measure.</div>
+  <div class="row" style="margin-top:6px">
+    <input id="findAtom" type="number" min="1" placeholder="atom-ID" style="width:90px" title="Type an atom-ID and press Enter">
+    <button id="clearSel">Clear</button>
+  </div>
+  <label class="check"><input id="showPaths" type="checkbox"> Show paths of selected atoms</label>
+  <div id="plotWrap">
+    <div class="small muted" id="plotTitle"></div>
+    <canvas id="plot" width="540" height="200" title="Click to jump to that frame"></canvas>
+  </div>
+
+  <h2>Lesson</h2>
+  <div class="small muted adv">Stops tie a caption, view and settings to a frame. During playback the latest caption shows
+    on screen and on the VR menu.</div>
+  <ul id="stopList"></ul>
+  <div class="row">
+    <button id="prevStop" title="Previous stop">◀ Stop</button>
+    <button id="nextStop" title="Next stop">Stop ▶</button>
+    <label class="check small" style="margin:0 0 0 auto"><input id="pauseAtStops" type="checkbox" checked> Pause at stops</label>
+  </div>
+  <div class="adv">
+    <textarea id="stopCaption" placeholder="Caption for this moment, e.g. &quot;Watch this water leave the C=O oxygen&quot;"></textarea>
+    <div class="row" style="margin-top:4px">
+      <button id="addStop" title="Save the current frame, camera, selection and display settings with this caption">Add stop here</button>
+      <button id="updateStop" title="Overwrite the highlighted stop with the current view and caption" disabled>Update stop</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="copyLink" title="Copy a link that opens this file with these settings and stops">Copy share link</button>
+      <label class="check small" style="margin:0"><input id="linkStudent" type="checkbox" checked> student mode</label>
+    </div>
+    <div id="linkInfo" class="small muted"></div>
+  </div>
+
+  <h2 class="adv">Controls</h2>
+  <div class="small muted adv">
+    <b>Desktop:</b> drag to rotate, scroll to zoom, right-drag to pan. Click an atom to inspect it,
+    shift-click more atoms to measure distance (2), angle (3) or dihedral (4).
+    Double-click an atom to orbit around it.
+    <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> step, <kbd>Esc</kbd> clear, <kbd>R</kbd> reset view,
+    <kbd>F</kbd> focus selection, <kbd>P</kbd> screenshot.<br>
+    <kbd>N</kbd>/<kbd>B</kbd> next/previous lesson stop.<br>
+    <b>VR:</b> look at the menu on your left controller and point at it with the right one to
+    play, scrub the timeline, step through lesson stops, or change style, color, water, H-bonds, arrows and paths.
+    Grip to grab and move; grip with both hands to scale and rotate. Trigger picks atoms
+    (up to 4 for measuring; trigger on empty space clears).
+    Shortcuts: <kbd>A</kbd>/<kbd>X</kbd> play/pause, <kbd>B</kbd>/<kbd>Y</kbd> style, stick click resets the view,
+    right stick ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop (water, if no stops).<br>
+    <b>Share a link</b> that opens a trajectory: <code>?traj=file.lammpstrj&amp;data=file.data&amp;map=1:C+2:H&amp;fs=2</code>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

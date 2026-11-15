@@ -74,17 +74,69 @@ export function nearMask(pos, refIdx, candIdx, R, n) {
 
 const POLAR = new Set(['N', 'O', 'F']);
 
-/** Donor hydrogens (H bonded to N/O/F) as pairs [h, donor], and acceptor atoms (N/O/F). */
-export function hbondParticipants(elements, bonds) {
+/**
+ * Donor hydrogens (H bonded to N/O/F) as pairs [h, donor], and acceptor atoms.
+ *
+ * O and F always accept. N accepts only if it has a lone pair free to take an H-bond:
+ *  - 4 bonds (ammonium, e.g. glycine's NH3+): no lone pair, not an acceptor.
+ *  - 3 bonds and planar (amide, aromatic or methylated ring N such as caffeine's N1/N3/N7): the
+ *    lone pair is delocalized into the pi system, so it is at best a very weak acceptor; excluded.
+ *  - 3 bonds and pyramidal (amine): acceptor.  1-2 bonds (imine/pyridine-like, caffeine's N9): acceptor.
+ * Planarity needs coordinates: pass `frames` ([{pos, box}], a few are averaged). Without them,
+ * 3-bonded N counts as an acceptor.
+ */
+export function hbondParticipants(elements, bonds, frames = null) {
+  const n = elements.length;
   const hd = [];
+  const deg = new Uint8Array(n);
   for (let b = 0; b < bonds.length; b += 2) {
     const i = bonds[b], j = bonds[b + 1];
+    deg[i]++; deg[j]++;
     if (elements[i] === 'H' && POLAR.has(elements[j])) hd.push(i, j);
     else if (elements[j] === 'H' && POLAR.has(elements[i])) hd.push(j, i);
   }
+  // Neighbors of 3-bonded nitrogens, for the planarity test.
+  const nbr = new Map();
+  for (let b = 0; b < bonds.length; b += 2) {
+    const i = bonds[b], j = bonds[b + 1];
+    for (const [x, y] of [[i, j], [j, i]]) {
+      if (elements[x] === 'N' && deg[x] === 3) { if (!nbr.has(x)) nbr.set(x, []); nbr.get(x).push(y); }
+    }
+  }
   const acc = [];
-  for (let i = 0; i < elements.length; i++) if (POLAR.has(elements[i])) acc.push(i);
+  for (let i = 0; i < n; i++) {
+    const e = elements[i];
+    if (e === 'O' || e === 'F') acc.push(i);
+    else if (e === 'N') {
+      if (deg[i] >= 4) continue;
+      if (deg[i] === 3 && frames && frames.length && nitrogenHeight(frames, i, nbr.get(i)) < N_PLANAR) continue;
+      acc.push(i);
+    }
+  }
   return { hd: Int32Array.from(hd), acc: Int32Array.from(acc) };
+}
+
+/** Planar if N sits closer than this (Å) to the plane of its 3 neighbors (amines: ~0.35-0.45 Å). */
+const N_PLANAR = 0.2;
+
+/** Mean distance of atom i from the plane through its three neighbors, over the given frames. */
+function nitrogenHeight(frames, i, nb) {
+  let sum = 0;
+  const v = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const { pos, box } of frames) {
+    for (let k = 0; k < 3; k++) {
+      const j = nb[k];
+      minImage(box, pos[3 * j] - pos[3 * i], pos[3 * j + 1] - pos[3 * i + 1], pos[3 * j + 2] - pos[3 * i + 2], v[k]);
+    }
+    const [a, b, c] = v;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    // N is at the origin; the plane passes through a.
+    sum += Math.abs(nx * a[0] + ny * a[1] + nz * a[2]) / nl;
+  }
+  return sum / frames.length;
 }
 
 /**

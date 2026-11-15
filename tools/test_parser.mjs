@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { parseTrajectory, parseDataFile } from '../src/lammps.js';
 import { resolveElements, resolveMols, bondsFromData, inferBonds, inferStableBonds, parseTypeMap, boxCorners } from '../src/model.js';
 
-const here = new URL('../samples/', import.meta.url);
-const traj = parseTrajectory(readFileSync(new URL('sample.lammpstrj', here), 'utf8'));
-const data = parseDataFile(readFileSync(new URL('sample.data', here), 'utf8'));
+const here = new URL('fixtures/', import.meta.url);
+const traj = parseTrajectory(readFileSync(new URL('synthetic.lammpstrj', here), 'utf8'));
+const data = parseDataFile(readFileSync(new URL('synthetic.data', here), 'utf8'));
 
 assert.equal(traj.n, 300);
 assert.equal(traj.frames.length, 120);
@@ -76,7 +76,7 @@ const e3 = resolveElements(t3, null, parseTypeMap('1:O 2:H')).elements;
 assert.deepEqual(e3, ['O', 'H', 'H']);
 
 // stride
-assert.equal(parseTrajectory(readFileSync(new URL('sample.lammpstrj', here), 'utf8'), { stride: 10 }).frames.length, 12);
+assert.equal(parseTrajectory(readFileSync(new URL('synthetic.lammpstrj', here), 'utf8'), { stride: 10 }).frames.length, 12);
 
 console.log('all parser tests passed; max bond length', maxLen.toFixed(3));
 
@@ -85,7 +85,7 @@ console.log('all parser tests passed; max bond length', maxLen.toFixed(3));
 import { createTrajectoryParser } from '../src/lammps.js';
 import { buildGroups, wrapGroups, atomPath, distance, angle, dihedral, waterGroups, minImage } from '../src/analysis.js';
 
-const dumpText = readFileSync(new URL('sample.lammpstrj', here), 'utf8');
+const dumpText = readFileSync(new URL('synthetic.lammpstrj', here), 'utf8');
 
 // Streaming parser fed line by line gives the same result as the string parser.
 {

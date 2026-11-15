@@ -14,16 +14,30 @@ python -m http.server 8137
 ```
 
 Then open http://localhost:8137 and click **Load sample** (or open
-`http://localhost:8137/?sample`). The sample opens with a six-stop guided tour (captions,
-solvation shell, H-bonds, a distance plot); use **Next stop** or press play. The tour lives in
-`samples/sample.lesson.json` and is a good template for your own lessons.
+`http://localhost:8137/?sample`). The sample is real MD data from the course's students:
+8 caffeine molecules in 3,000 waters, a 51-frame NPT run (`samples/caffeine_water.lammpstrj.gz`,
+a `dump custom` with scaled coordinates and numeric types; the element map is built in). It
+opens with a seven-stop guided tour (equilibration of the box, the hydration shell, which
+caffeine atoms accept H-bonds, a distance plot); use **Next stop** or press play. The tour
+lives in `samples/sample.lesson.json` and is a good template for your own lessons. Its
+numbers were checked against the data.
 
 ### In a headset
 
 WebXR only runs on `https://` pages or `localhost`.
 
 - **PC VR (Quest Link / SteamVR):** open the localhost URL in Chrome or Edge on the PC
-  and click **Enter VR**.
+  and click **Enter VR**. Chrome and Edge talk to whichever **OpenXR runtime** is active,
+  so any headset SteamVR drives works the same way:
+  - **HTC Vive / Index / other SteamVR headsets:** start SteamVR and make it the OpenXR
+    runtime (SteamVR settings → OpenXR → *Set SteamVR as OpenXR runtime*). Vive wands have a
+    trackpad instead of a thumbstick and no A/B buttons: the trigger, grips and the wrist
+    menu do everything, the right trackpad scrubs while touched, and pressing it resets the
+    view. Play/pause and style are on the menu.
+  - **Quest through SteamVR** (Quest Link, Air Link, Steam Link or Virtual Desktop with
+    SteamVR): same as above; the Quest controllers keep all their shortcuts.
+  - Mixed classrooms are fine: each PC drives its own headset, and the same page works on
+    all of them. (Neither has been tried on real hardware yet; see limitations.)
 - **Quest via Virtual Desktop (wireless PC VR, the setup on the dev machine):**
   1. Start the server on the PC (above) and keep it running.
   2. In Virtual Desktop's streamer settings, set the OpenXR runtime to **VDXR**. Chrome
@@ -133,7 +147,9 @@ frame), costing a few ms even with thousands of H-bonds.
   atom within the shell radius of a non-water atom, recomputed as molecules move), or
   *Hide*. (*Near solute* is disabled for pure water, where there is nothing to be near.)
 - **Hydrogen bonds:** dashed lines for D–H···A where H···A ≤ 2.5 Å and the D–H···A angle
-  ≥ 120°, for N/O/F donors and acceptors. *With solute* shows only H-bonds that involve a
+  ≥ 120°. Donors are H on N/O/F. Acceptors are O, F and N with a free lone pair: N with
+  four bonds (e.g. NH₃⁺) and planar N with three bonds (amide, aromatic or methylated ring N,
+  like caffeine's N1/N3/N7) are not counted, since their lone pair is tied up. *With solute* shows only H-bonds that involve a
   non-water molecule; *All shown atoms* includes water–water ones. The count is shown.
   They are drawn as short cyan dashes (3D cylinders, so they stay visible in a headset).
 - **Color by data:** any extra dump column (charge, per-atom energy...) or a vector's
@@ -187,7 +203,8 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
     The ray stops on whatever it is pointing at.
   - Shortcuts: A/X play/pause, B/Y style, thumbstick click re-centers the view, right stick
     ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop (cycles the
-    water display when there are no stops).
+    water display when there are no stops). On trackpad controllers (Vive wands) the pad
+    acts as the stick while touched, and pressing it re-centers.
   - Hand tracking: pinch to pick, pinch-grab to move.
 
 ## Layout
@@ -206,8 +223,10 @@ src/chem.js           element guessing, solvation-shell masks, hydrogen bonds
 src/props.js          extra dump columns: vector detection, color ranges, colormaps
 src/elements.js       element colors / radii / masses
 src/parse-worker.js   streams (and gunzips) files off the main thread (memory guard)
-tools/make_sample.py  writes samples/sample.lammpstrj + sample.data (synthetic, not physical)
+samples/caffeine_water.lammpstrj.gz  the sample: caffeine in water, real student NPT run
 samples/sample.lesson.json  the sample's guided tour (lesson stops, same format as share links)
+tools/fixtures/       synthetic parser fixture (random-walk molecules; not physical)
+tools/make_sample.py  regenerates tools/fixtures/synthetic.lammpstrj + .data
 tools/test_parser.mjs   parser, bond and wrapping tests:  node tools/test_parser.mjs
 tools/test_features.mjs columns, gzip, guessing, H-bond, shell tests:  node tools/test_features.mjs
 ```
@@ -215,7 +234,8 @@ tools/test_features.mjs columns, gzip, guessing, H-bond, shell tests:  node tool
 ## Known limitations / next steps
 
 - VR has been tested in the IWER emulator (menu, timeline, picking, one/two-hand grab,
-  buttons, sticks), but not yet in a real headset. Comfort, menu size and placement need
+  buttons, sticks), but not yet in a real headset. The Vive trackpad mapping follows the
+  WebXR standard layout but hasn't been tried on a Vive. Comfort, menu size and placement need
   a real try-on.
 - Reactive mode re-infers bonds from distances only (no bond orders). Molecule coloring
   and the water modes use the initial topology.

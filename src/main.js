@@ -258,6 +258,22 @@ async function loadFiles(files) {
   }
 }
 
+/** First, middle and last frames: enough to average out thermal noise in geometric tests. */
+function sampleFrames(traj) {
+  const f = traj.frames, k = f.length - 1;
+  return [...new Set([0, k >> 1, k])].map((i) => f[i]);
+}
+
+// The bundled sample: caffeine in water from a student NPT run (LAMMPS dump custom with scaled
+// coordinates and numeric types only). The element map below was checked by hand against
+// caffeine's structure; it is the same map *Guess elements* produces.
+const SAMPLE = {
+  traj: 'samples/caffeine_water.lammpstrj.gz',
+  map: '1:C 2:N 3:C 4:N 5:C 6:C 7:C 8:O 9:N 10:C 11:C 12:O 13:N 14:C 15:H 16:H 17:H 18:H 19:H 20:H ' +
+    '21:H 22:H 23:H 24:H 25:O 26:H',
+  lesson: 'samples/sample.lesson.json',
+};
+
 async function loadSample() {
   const get = async (p) => {
     const r = await fetch(p);
@@ -265,12 +281,13 @@ async function loadSample() {
     return new File([await r.blob()], p.split('/').pop());
   };
   try {
-    source.traj = 'samples/sample.lammpstrj'; source.data = 'samples/sample.data';
-    await loadFiles([await get('samples/sample.lammpstrj'), await get('samples/sample.data')]);
+    source.traj = SAMPLE.traj; source.data = null;
+    $('typeMap').value = SAMPLE.map;
+    await loadFiles([await get(SAMPLE.traj)]);
     // The sample comes with a short guided tour, unless a link brought its own stops.
     if (!S.stops.length) {
       try {
-        const r = await fetch('samples/sample.lesson.json');
+        const r = await fetch(SAMPLE.lesson);
         if (r.ok) {
           S.stops = (await r.json()).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f);
           S.sampleTour = true;
@@ -362,7 +379,7 @@ function applyTopology() {
   }
   S.soluteIdx = Int32Array.from(sol);
   S.waterIdx = Int32Array.from(wat);
-  S.hb = hbondParticipants(elements, S.staticBonds);
+  S.hb = hbondParticipants(elements, S.staticBonds, sampleFrames(traj));
 
   const nWater = S.water.reduce((a, b) => a + b, 0);
   $('hideWaterInfo').textContent = nWater ? `(${nWater.toLocaleString()} molecules)` : '(none found)';
@@ -745,7 +762,7 @@ function updatePositions() {
   if (S.dynBonds && i0 !== S.lastBondFrame) {
     S.lastBondFrame = i0;
     setBonds(inferBonds(cur, S.elements, { mols: null, box }));
-    S.hb = hbondParticipants(S.elements, S.bonds);
+    S.hb = hbondParticipants(S.elements, S.bonds, [{ pos: cur, box }]);
   }
 
   // Contacts (solvation shell, H-bonds) depend on the data frame and settings, not on the
@@ -1320,7 +1337,7 @@ $('dynBonds').onchange = (e) => {
   S.dynBonds = e.target.checked;
   if (!S.traj) return;
   S.lastBondFrame = -1;
-  if (!S.dynBonds) { buildBondMesh(S.staticBonds.length / 2); setBonds(S.staticBonds); S.hb = hbondParticipants(S.elements, S.bonds); }
+  if (!S.dynBonds) { buildBondMesh(S.staticBonds.length / 2); setBonds(S.staticBonds); S.hb = hbondParticipants(S.elements, S.bonds, sampleFrames(S.traj)); }
   S.dirty = true;
 };
 $('showPaths').onchange = (e) => { S.showPaths = e.target.checked; if (S.traj) select(S.sel); };
@@ -1388,7 +1405,7 @@ function captureStop(caption) {
     f: Math.round(S.frameF),
     cap: caption,
     sel: S.sel.map((i) => S.traj.ids[i]),
-    v: { rep: S.rep, color: S.colorBy, water: S.waterMode, hb: S.hbonds, arrows: S.arrows, paths: S.showPaths },
+    v: { rep: S.rep, color: S.colorBy, water: S.waterMode, shell: S.shellR, hb: S.hbonds, arrows: S.arrows, paths: S.showPaths },
   };
   if (!renderer.xr.isPresenting) {
     const p = model.worldToLocal(camera.position.clone()), t = model.worldToLocal(controls.target.clone());
@@ -1403,6 +1420,7 @@ function applyStop(k, { playback = false } = {}) {
   const v = st.v || {};
   if (v.rep) setRep(v.rep);
   if (v.color) setColorBy(v.color);
+  if (v.shell) { S.shellR = THREE.MathUtils.clamp(+v.shell || 4, 1, 15); $('shellR').value = String(S.shellR); }
   if (v.water) setWater(v.water);
   if (v.hb) setHBonds(v.hb);
   if (v.arrows != null) setArrows(v.arrows);
@@ -1511,6 +1529,7 @@ const source = { traj: params.get('traj'), data: params.get('data') };
 function openLocal(files) {
   source.traj = source.data = null;
   if (S.sampleTour) { S.stops = []; S.activeStop = -1; S.sampleTour = false; renderStops(); }
+  if ($('typeMap').value === SAMPLE.map) $('typeMap').value = ''; // the sample's map is not for this file
   loadFiles(files);
 }
 
@@ -1691,8 +1710,14 @@ function pollGamepads(dt) {
     const right = h.source.handedness !== 'left';
     if (edge(4)) setPlaying(!S.playing);                                   // A / X
     if (edge(5)) setRep(REPS[(REPS.indexOf(S.rep) + 1) % REPS.length]);    // B / Y
-    if (edge(3)) resetView();                                              // thumbstick click
-    const ax = gp.axes[2] || 0, ay = gp.axes[3] || 0;
+    // xr-standard mapping: thumbstick on axes 2/3 (button 3); touchpad on axes 0/1 (button 2).
+    // Controllers with only a touchpad (HTC Vive wands) use it as the stick, read only while touched
+    // so a resting thumb does nothing; pressing the pad resets the view.
+    const hasStick = gp.axes.length >= 4 && gp.buttons.length > 3;
+    if (edge(hasStick ? 3 : 2)) resetView();                               // stick / pad click
+    const padOn = !hasStick && gp.buttons[2] && gp.buttons[2].touched;
+    const ax = hasStick ? gp.axes[2] || 0 : padOn ? gp.axes[0] || 0 : 0;
+    const ay = hasStick ? gp.axes[3] || 0 : padOn ? gp.axes[1] || 0 : 0;
     if (right && S.traj) {
       if (Math.abs(ax) > 0.25) {
         setPlaying(false);
@@ -1723,7 +1748,7 @@ function pollGamepads(dt) {
 
 // Wrist menu: on the left controller (or the only one). Point at it with the other hand's ray.
 const menu = (() => {
-  const W = 800, H = 780;
+  const W = 800, H = 880;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -1731,9 +1756,9 @@ const menu = (() => {
   tex.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.2 * H / W),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide })); // rays from either side
-  mesh.position.set(0, 0.11, 0.03); // just above the controller; turned to face the head every frame (faceHead)
+  mesh.position.set(0, 0.125, 0.03); // just above the controller; turned to face the head every frame (faceHead)
   const TL = { x: 30, y: 160, w: 740, h: 46 };
-  const INFO = { x: 30, y: 228, w: 740, h: 112 }; // measurement plot, or the lesson caption
+  const INFO = { x: 30, y: 228, w: 740, h: 212 }; // measurement plot, or the lesson caption
   const nextIn = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
   const WATER_LABEL = { all: 'water: all', near: 'water: near', hide: 'water: off' };
   const HB_LABEL = { off: 'H-bonds: off', solute: 'H-bonds: solute', all: 'H-bonds: all' };
@@ -1744,7 +1769,7 @@ const menu = (() => {
     ['hb', () => HB_LABEL[S.hbonds]],
     ['arrows', () => (S.arrows ? `arrows: ${S.arrows}` : 'arrows: off')],
     ['prevStop', () => '◀  stop'], ['nextStop', () => 'stop  ▶'],
-  ].map(([id, label], k) => ({ id, label, x: 30 + (k % 4) * 188, y: 356 + Math.floor(k / 4) * 104, w: 176, h: 92 }));
+  ].map(([id, label], k) => ({ id, label, x: 30 + (k % 4) * 188, y: 456 + Math.floor(k / 4) * 104, w: 176, h: 92 }));
   const enabled = (id) => {
     if (id === 'reset') return true;
     if (!S.traj) return false;
@@ -1862,8 +1887,17 @@ const menu = (() => {
       ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = '#8b949e'; ctx.font = '20px system-ui, sans-serif';
       ctx.fillText(`stop ${S.activeStop + 1} of ${S.stops.length}`, INFO.x + 16, INFO.y + 26);
-      ctx.fillStyle = '#e6edf3'; ctx.font = '26px system-ui, sans-serif';
-      wrap(stop.cap, INFO.w - 32, 3).forEach((l, k) => ctx.fillText(l, INFO.x + 16, INFO.y + 56 + 28 * k));
+      ctx.fillStyle = '#e6edf3';
+      // Largest font at which the whole caption fits (5-7 lines); the last size clips if it must.
+      for (const [px, lh] of [[26, 31], [23, 27], [20, 24]]) {
+        ctx.font = `${px}px system-ui, sans-serif`;
+        const maxLines = Math.floor((INFO.h - 46) / lh);
+        const lines = wrap(stop.cap, INFO.w - 32, 99);
+        if (lines.length <= maxLines || px === 20) {
+          wrap(stop.cap, INFO.w - 32, maxLines).forEach((l, k) => ctx.fillText(l, INFO.x + 16, INFO.y + 62 + lh * k));
+          break;
+        }
+      }
     } else if (S.series) {
       plotSeries(ctx, INFO.x, INFO.y, INFO.w, INFO.h, true);
     } else {
@@ -1893,8 +1927,8 @@ const menu = (() => {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#8b949e';
     ctx.font = '23px system-ui, sans-serif';
-    ctx.fillText('grip: grab & move · both grips: scale/rotate · trigger: pick atoms', 30, 710);
-    ctx.fillText('A/X play · B/Y style · stick click: reset · R stick: scrub/speed', 30, 746);
+    ctx.fillText('grip: grab & move · both grips: scale/rotate · trigger: pick atoms', 30, 810);
+    ctx.fillText('A/X play · B/Y style · R stick/pad: scrub · click it: reset', 30, 846);
     tex.needsUpdate = true;
   }
 

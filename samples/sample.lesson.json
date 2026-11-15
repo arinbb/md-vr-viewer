@@ -1,38 +1,103 @@
 [
   {
     "f": 0,
-    "cap": "Welcome! This box holds 3 glycine molecules (the simplest amino acid) in 90 waters. Colors: red O, white H, grey C, blue N. The motion is a synthetic demo, not a real simulation. Press play, or use Next stop.",
+    "cap": "A real LAMMPS simulation: 8 caffeine molecules in 3,000 waters. Water is hidden so you can find the caffeines: two fused rings with two C=O groups and three CH3 groups. Grey C, white H, blue N, red O.",
     "sel": [],
-    "v": { "rep": "ballstick", "color": "element", "water": "all", "hb": "off", "arrows": "", "paths": false }
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "hide",
+      "shell": 4,
+      "hb": "off",
+      "arrows": "",
+      "paths": false
+    }
   },
   {
-    "f": 15,
-    "cap": "Each molecule now has its own color. Find the three glycines among the waters. Each is a chain N–C–C with two O on the end.",
+    "f": 1,
+    "cap": "Now with all the water. Early in the run the box is about 50 Å wide and the water is loosely packed: about 0.73 g/cm³, well below liquid water (about 1.0).",
     "sel": [],
-    "v": { "rep": "ballstick", "color": "mol", "water": "all", "hb": "off", "arrows": "", "paths": false }
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "all",
+      "shell": 4,
+      "hb": "off",
+      "arrows": "",
+      "paths": false
+    }
   },
   {
-    "f": 30,
-    "cap": "Bulk water is hidden. Only waters within 4 Å of a glycine are shown: this is the solvation shell. Watch waters join and leave it as you play.",
+    "f": 11,
+    "cap": "Pressure and temperature are held constant (NPT), so the box shrank to about 44.5 Å and 1.05 g/cm³, and stays there. Earlier frames are equilibration, normally left out of analysis.",
     "sel": [],
-    "v": { "rep": "ballstick", "color": "element", "water": "near", "hb": "off", "arrows": "", "paths": false }
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "all",
+      "shell": 4,
+      "hb": "off",
+      "arrows": "",
+      "paths": false
+    }
+  },
+  {
+    "f": 20,
+    "cap": "Only waters within 4 Å of a caffeine are shown: roughly the first hydration shell, about 300 of the 3,000. Play and watch waters join and leave.",
+    "sel": [],
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "near",
+      "shell": 4,
+      "hb": "off",
+      "arrows": "",
+      "paths": false
+    }
+  },
+  {
+    "f": 25,
+    "cap": "Cyan dashes: H-bonds (H···acceptor ≤ 2.5 Å, angle ≥ 120°). Caffeine has no O–H or N–H, so it only accepts them. Each C=O oxygen averages about one; N9, the ring N without a CH3, about 0.3. N atoms with a CH3 aren't counted (their lone pairs are shared with the ring).",
+    "sel": [],
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "near",
+      "shell": 4,
+      "hb": "solute",
+      "arrows": "",
+      "paths": false
+    }
+  },
+  {
+    "f": 35,
+    "cap": "The same ring carbon in two caffeines: the plot shows their distance (click to jump), the paths their motion. They drift from about 14 to 11 Å apart. Caffeine can stack face to face in water, but no pair does in this short run.",
+    "sel": [
+      77,
+      101
+    ],
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "hide",
+      "shell": 4,
+      "hb": "off",
+      "arrows": "",
+      "paths": true
+    }
   },
   {
     "f": 50,
-    "cap": "Cyan dashes are hydrogen bonds between glycine and water (H···O or H···N at most 2.5 Å, angle at least 120°). Which glycine atoms make the most H-bonds?",
+    "cap": "End of the tour. Try other styles, pick atoms to measure, or press Enter VR to walk around the box.",
     "sel": [],
-    "v": { "rep": "ballstick", "color": "element", "water": "near", "hb": "solute", "arrows": "", "paths": false }
-  },
-  {
-    "f": 75,
-    "cap": "Two glycine N atoms are selected. The plot shows their distance over the whole run (click it to jump to a frame), and the paths show where each one went.",
-    "sel": [1, 11],
-    "v": { "rep": "ballstick", "color": "element", "water": "hide", "hb": "off", "arrows": "", "paths": true }
-  },
-  {
-    "f": 119,
-    "cap": "End of the tour. Try other styles, pick atoms yourself, or press Enter VR to walk around the box.",
-    "sel": [],
-    "v": { "rep": "ballstick", "color": "element", "water": "all", "hb": "off", "arrows": "", "paths": false }
+    "v": {
+      "rep": "ballstick",
+      "color": "element",
+      "water": "all",
+      "shell": 4,
+      "hb": "off",
+      "arrows": "",
+      "paths": false
+    }
   }
 ]

@@ -7,7 +7,10 @@ their bonds vibrate a little. It deliberately exercises the parser:
   * numeric type-IDs only; elements come from the data file Masses section
   * a Bonds section in the data file
 
-Usage:  python tools/make_sample.py [outdir]   (default: samples/)
+Usage:  python tools/make_sample.py [outdir]   (default: tools/fixtures/)
+
+The bundled sample is now real MD data (samples/caffeine_water.lammpstrj.gz); this synthetic
+box is only for exercising the parser (shuffled rows, image flags, data-file topology).
 """
 import math
 import os
@@ -44,7 +47,7 @@ def apply(m, v):
 
 
 def main():
-    outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), '..', 'samples')
+    outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), 'fixtures')
     os.makedirs(outdir, exist_ok=True)
 
     molecules = []  # dict(template, center, angles, vel, spin)
@@ -69,7 +72,7 @@ def main():
             bonds.append((base + i + 1, base + j + 1))
 
     # --- data file
-    with open(os.path.join(outdir, 'sample.data'), 'w', newline='\n') as f:
+    with open(os.path.join(outdir, 'synthetic.data'), 'w', newline='\n') as f:
         f.write('Synthetic water + glycine box for bio-vr viewer testing\n\n')
         f.write(f'{len(atoms)} atoms\n{len(bonds)} bonds\n4 atom types\n1 bond types\n\n')
         f.write(f'0.0 {L} xlo xhi\n0.0 {L} ylo yhi\n0.0 {L} zlo zhi\n\n')
@@ -82,7 +85,7 @@ def main():
             f.write(f'{k} 1 {a} {b}\n')
 
     # --- dump file
-    with open(os.path.join(outdir, 'sample.lammpstrj'), 'w', newline='\n') as f:
+    with open(os.path.join(outdir, 'synthetic.lammpstrj'), 'w', newline='\n') as f:
         for frame in range(NFRAMES):
             rows = []
             for (i, mol, typ, mi, ti) in atoms:

@@ -96,3 +96,24 @@ console.log('extra column tests passed');
   assert.deepEqual([3, 4, 5, 6, 7, 8].map((i) => mask[i]), [1, 1, 1, 0, 0, 0], 'only water B is within 4 Å');
   console.log('H-bond and shell tests passed');
 }
+
+// --- Which nitrogens accept H-bonds
+{
+  // Atoms: 0 N planar (3 C in its plane), 1-3 C;  4 N pyramidal (amine), 5-7 C;
+  //        8 N with 4 bonds (ammonium), 9-12 H/C;  13 N with 2 bonds (pyridine-like), 14-15 C.
+  const P = [];
+  const put = (x, y, z) => P.push(x, y, z);
+  put(0, 0, 0); put(1.45, 0, 0); put(-0.72, 1.26, 0); put(-0.72, -1.26, 0);                // planar
+  put(10, 0, 0); put(11.37, 0, 0.48); put(9.32, 1.18, 0.48); put(9.32, -1.18, 0.48);         // pyramidal (~0.48 Å)
+  put(20, 0, 0); put(21.0, 0, 0); put(19.67, 0.94, 0); put(19.67, -0.47, 0.82); put(19.5, -0.7, -1.2);
+  put(30, 0, 0); put(31.34, 0, 0); put(29.33, 1.17, 0);
+  const pos = Float32Array.from(P);
+  const el = ['N', 'C', 'C', 'C', 'N', 'C', 'C', 'C', 'N', 'H', 'H', 'H', 'C', 'N', 'C', 'C'];
+  const bonds = [0, 1, 0, 2, 0, 3, 4, 5, 4, 6, 4, 7, 8, 9, 8, 10, 8, 11, 8, 12, 13, 14, 13, 15];
+  const frames = [{ pos, box: null }];
+  const acc = [...hbondParticipants(el, bonds, frames).acc];
+  assert.deepEqual(acc, [4, 13], 'only the amine and the 2-bonded N accept');
+  assert.equal(hbondParticipants(el, bonds, frames).hd.length / 2, 3, 'ammonium H are donors');
+  assert.deepEqual([...hbondParticipants(el, bonds).acc], [0, 4, 13], 'without coordinates, 3-bonded N accepts');
+  console.log('acceptor rule tests passed');
+}

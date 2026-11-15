@@ -77,7 +77,7 @@ The viewer leans heavily on standard browser features instead of libraries:
 | API | Where | Why |
 |---|---|---|
 | **WebXR Device API** | `main.js` (through three.js) | Headset pose, stereo rendering, `XRInputSource` controllers and hands, `local-floor` reference space |
-| **Gamepad API** (inside WebXR input sources) | `pollGamepads()` | Thumbsticks and A/B/X/Y buttons on Quest controllers |
+| **Gamepad API** (inside WebXR input sources) | `pollGamepads()` | Thumbsticks and A/B/X/Y buttons on Quest/Index controllers, trackpads on Vive wands |
 | **Web Workers** (module workers) | `parse-worker.js` | Parse files without freezing rendering |
 | **Streams API** + `TextDecoderStream` | `parse-worker.js` | Read multi-GB files chunk by chunk; V8 cannot hold a string larger than ~0.5–1 GB |
 | **`DecompressionStream('gzip')`** | `parse-worker.js`, `headText()` in `main.js` | Open `.gz` dumps (e.g. `dump custom/gz`) without a library |
@@ -93,7 +93,7 @@ The viewer leans heavily on standard browser features instead of libraries:
 | Tool | Used for |
 |---|---|
 | Python 3 `http.server` | Local static server (`python -m http.server 8137`). WebXR needs `localhost` or HTTPS. |
-| Python 3 (`tools/make_sample.py`) | Generates the synthetic sample trajectory and data file |
+| Python 3 (`tools/make_sample.py`) | Generates the synthetic parser fixture (trajectory + data file) |
 | Node.js (`tools/test_parser.mjs`, `tools/test_features.mjs`) | Runs the parser, geometry and teaching-feature tests; the core modules have no DOM dependencies |
 
 ---
@@ -112,10 +112,12 @@ src/
   props.js             extra dump columns: vectors, color ranges, colormaps (DOM-free)
   elements.js          element table: colors, radii, masses; color palettes (DOM-free)
 tools/
-  make_sample.py       synthetic test trajectory generator
+  make_sample.py       synthetic test fixture generator
+  fixtures/            synthetic.lammpstrj + .data (parser fixture, not physical)
   test_parser.mjs      Node tests: parsers, bonds, wrapping
   test_features.mjs    Node tests: extra columns, gzip, element guessing, H-bonds, shell
-samples/               sample.lammpstrj + sample.data (samples/big/ is git-ignored)
+samples/               caffeine_water.lammpstrj.gz (real student NPT run) + sample.lesson.json
+                       (its guided tour); samples/big/ is git-ignored
 ```
 
 The six DOM-free modules (`lammps.js`, `model.js`, `analysis.js`, `chem.js`, `props.js`, `elements.js`) are
@@ -225,7 +227,7 @@ Each request has an `id`, so overlapping loads can't be confused. `main.js` also
 |---|---|
 | `guessElements(traj, known)` | Elements for numeric types from bonding geometry (section 6.7) |
 | `nearMask(pos, refIdx, candIdx, R, n)` | Marks candidate atoms within R of any reference atom (uniform grid); used for the water shell |
-| `hbondParticipants(elements, bonds)` | Donor pairs `[h, d]` (H bonded to N/O/F) and acceptors (N/O/F) |
+| `hbondParticipants(elements, bonds, frames)` | Donor pairs `[h, d]` (H bonded to N/O/F) and acceptors: O, F, and N with a free lone pair (section 6.8) |
 | `findHBonds(pos, participants, opts)` | `[h, a]` pairs with H···A ≤ 2.5 Å and D–H···A ≥ 120° (section 6.8) |
 
 ### 3.7 `props.js`: extra dump columns
@@ -524,7 +526,13 @@ after wrapping:
 - **H-bonds:** grid the acceptors with cell size 2.5 Å. For each donor hydrogen, test the
   acceptors in the 27 neighboring cells: H···A ≤ 2.5 Å and cos∠(D–H···A) ≤ cos 120°. A
   `keep` filter applies visibility and the *with solute* rule (donor or acceptor
-  molecule must be non-water). Each H-bond is drawn as three short cylinders (an
+  molecule must be non-water).
+- **Acceptors** (`hbondParticipants`): every O and F, but N only when its lone pair is
+  free. N with 4 bonds (ammonium, NH₃⁺) is skipped. N with 3 bonds is skipped when planar:
+  its distance from the plane of its three neighbors, averaged over the first, middle and
+  last frames (current frame in reactive mode), is under 0.2 Å. Amide, aromatic and
+  methylated ring N (caffeine's N1/N3/N7) are planar, and amines are pyramidal (about 0.35–0.45 Å).
+  N with 1–2 bonds (pyridine-like, caffeine's N9) accepts. Each H-bond is drawn as three short cylinders (an
   `InstancedMesh`), because one-pixel dashed lines nearly vanish in a headset.
 
 Both searches run only when the data frame or a relevant setting changes (`contactKey`,
@@ -532,7 +540,7 @@ section 5.2); see section 5.3 for timings.
 
 ### 6.9 Lesson stops and share links
 
-A stop is `{ f, cap, sel: [atom-IDs], v: { rep, color, water, hb, arrows, paths }, cam }`.
+A stop is `{ f, cap, sel: [atom-IDs], v: { rep, color, water, shell, hb, arrows, paths }, cam }`.
 `cam` holds the camera position and orbit target in **model coordinates**, so it survives
 a refit or window resize. Stops are kept sorted by frame.
 
@@ -563,9 +571,9 @@ stateDiagram-v2
 | **Placement** | On session start, reads the `XRViewerPose` directly from the `XRFrame` (reliable on the first frame) and puts `root` 0.75 m in front of the head along the horizontal look direction, 15 cm below eye level, rotated to face the user. |
 | **Grab (one hand)** | On `squeezestart`, stores `offset = inverse(controller) × root`; each frame sets `root = controller × offset`. The system moves rigidly with the hand. |
 | **Grab (two hands)** | Stores the initial hand distance, the hand-to-hand direction and the root point under the midpoint. Each frame, scale = s₀·d/d₀, rotation = (quaternion turning the old hand-to-hand direction into the new one) × q₀, and the position keeps the same root point under the midpoint. |
-| **Wrist menu** (`menu`) | An 800×780 canvas on a 20×19.5 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (the active stop's caption, else the measurement plot, which also scrubs), and 12 buttons (step, play, reset, style, color, water, paths, H-bonds, arrows, previous/next stop). `hitTest(uv)` maps the ray's UV hit to a button or timeline position; `press()` performs the action. Long labels shrink to 21 px before clipping. It redraws only when its state key changes. |
+| **Wrist menu** (`menu`) | An 800×880 canvas on a 20×22 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; else the measurement plot, which also scrubs), and 12 buttons (step, play, reset, style, color, water, paths, H-bonds, arrows, previous/next stop). `hitTest(uv)` maps the ray's UV hit to a button or timeline position; `press()` performs the action. Long labels shrink to 21 px before clipping. It redraws only when its state key changes. |
 | **Ray priority** | `updateHover` raycasts the menu first (three.js `Raycaster` against one plane), then atoms. While a ray is on the menu, the trigger never picks atoms behind it. Holding the trigger on the timeline scrubs. |
-| **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). Edges are detected against the previous frame. |
+| **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
 | **Hand tracking** | Requested as an optional feature. A pinch fires `select`/`squeeze` like a controller, and the laser is hidden for hands. |
 | **Emulation** | With `?emulate`, IWER replaces `navigator.xr`. Tests then drive `xrDevice.controllers.right.position / quaternion / updateButtonValue / updateAxes`, exactly like a real Quest. |
 
@@ -603,7 +611,7 @@ sequenceDiagram
 
 | Layer | How | Command |
 |---|---|---|
-| Parsers, topology, geometry | `tools/test_parser.mjs`: Node + `assert` on the sample data and hand-built edge cases. Covers frame/ID ordering, image-flag unwrapping, scaled and triclinic coordinates, XYZ, stride, streaming, the memory-guard stride, truncated files, groups and water detection, repairing 1,566 split bonds, continuous paths, triclinic minimum image, measurements, periodic and triclinic bond inference, and 30k-atom bond-inference speed. | `node tools/test_parser.mjs` |
+| Parsers, topology, geometry | `tools/test_parser.mjs`: Node + `assert` on the synthetic fixture (`tools/fixtures/`) and hand-built edge cases. Covers frame/ID ordering, image-flag unwrapping, scaled and triclinic coordinates, XYZ, stride, streaming, the memory-guard stride, truncated files, groups and water detection, repairing 1,566 split bonds, continuous paths, triclinic minimum image, measurements, periodic and triclinic bond inference, and 30k-atom bond-inference speed. | `node tools/test_parser.mjs` |
 | Desktop UI | Browser checks through `window.viewer` (`screenOf(i)` converts an atom to screen pixels for real clicks) | manual / scripted |
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
 | VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
@@ -613,10 +621,12 @@ sequenceDiagram
 `tools/test_features.mjs` covers the teaching features on a hand-built water dimer: extra
 columns and vector detection, diverging ranges, a gzip round-trip through
 `DecompressionStream`, element guessing, exactly one H-bond in a linear dimer and none
-when bent, and the shell mask. The caffeine-in-water file (not in the repo) was used to
-check that guessing gets all 26 types right.
+when bent, the shell mask, and the acceptor rule (planar, pyramidal, 4-bonded and
+2-bonded N). On the bundled caffeine sample, guessing gets all 26 types right (this map is
+built into `loadSample`), and the tour's numbers (box size and density, shell size, H-bonds
+per acceptor) were computed from the data with these modules.
 
-`tools/make_sample.py` makes the synthetic fixture: 90 waters and 3 glycines in an
+`tools/make_sample.py` makes the synthetic fixture (`tools/fixtures/synthetic.*`): 90 waters and 3 glycines in an
 18 Å box, 120 frames, with shuffled rows, wrapped coordinates and image flags, numeric
 types and a data file with masses and bonds. It's built to exercise the parser, not to
 be physically realistic.

@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MD Trajectory VR Viewer</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#0d1117">
 <style>
   :root {
     --bg: #0d1117; --panel: rgba(22, 27, 34, 0.95); --border: #30363d; --hover: #21262d;
@@ -22,6 +25,7 @@
   #ui > header { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
   #ui > header h1 { font-size: 15px; margin: 0; flex: 1; }
   #statusBox { padding: 0 12px 8px; border-bottom: 1px solid var(--border); }
+  #xrNote { margin-top: 6px; font-size: 12px; color: #f0b429; }
   #sections { overflow-y: auto; display: flex; flex-direction: column; }
   body.mode-lesson details[data-sec="lesson"] { order: -1; }
   #ui.collapsed #statusBox, #ui.collapsed #sections { display: none; }
@@ -112,7 +116,7 @@
   body.mode-explore details[data-sec="lesson"] { display: none; }
   body.mode-explore #caption { display: none !important; }
   #ui.collapsed #modeBox { display: none; }
-  #vrBtn { font-weight: 600; white-space: nowrap; }
+  #vrBtn, #arBtn { font-weight: 600; white-space: nowrap; }
   #bar:not(.loaded) .needs-traj { opacity: .45; pointer-events: none; }
 
   #caption { position: fixed; left: 50%; bottom: calc(var(--bar-h) + 28px); transform: translateX(-50%);
@@ -131,7 +135,7 @@
     #bar .speed, #frameInfo { display: none; }
     #caption { font-size: 15px; left: 12px; right: 12px; transform: none; max-width: none; }
     #bar .lbl { display: none; }
-    #vrBtn { padding: 5px 8px; }
+    #vrBtn, #arBtn { padding: 5px 8px; }
     #barRight { margin-left: auto; }
   }
 </style>

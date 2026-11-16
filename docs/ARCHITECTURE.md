@@ -7,7 +7,9 @@ maintains or extends the viewer next (for example a student developer or the lab
 research software engineer).
 
 For *using* the viewer, see the [README](../README.md). For *why* it's built on WebXR
-rather than VMD, Unity, Godot or Unreal, see [SCOPING.md](../SCOPING.md).
+rather than VMD, Unity, Godot or Unreal, see [SCOPING.md](../SCOPING.md). To brief a
+programmer who has to build it again from scratch (the core, how each feature sits on it,
+acceptance numbers and pitfalls), see [REBUILD_BRIEF.md](REBUILD_BRIEF.md).
 
 ---
 
@@ -101,6 +103,9 @@ The viewer leans heavily on standard browser features instead of libraries:
 
 ```
 index.html             page layout, styles, control panel, import map
+sw.js                  service worker: offline cache for the installed app
+manifest.webmanifest   web app manifest (name, icons, standalone display)
+icons/                 app icons, drawn by tools/make_icons.py
 src/
   main.js              application: scene, loading, rendering loop, all interaction
   parse-worker.js      Web Worker: streams files into the parsers, memory guard
@@ -112,6 +117,8 @@ src/
   elements.js          element table: colors, radii, masses; color palettes (DOM-free)
 tools/
   make_sample.py       synthetic test fixture generator
+  make_icons.py        draws icons/icon-192.png and icon-512.png (Pillow)
+  build_site.py        copies the hosted app into dist/ (git-ignored); --no-sample
   fixtures/            synthetic.lammpstrj + .data (parser fixture, not physical)
   test_parser.mjs      Node tests: parsers, bonds, wrapping
   test_features.mjs    Node tests: extra columns, gzip, element guessing, H-bonds, shell
@@ -135,10 +142,16 @@ which is what makes them testable without a browser.
   button collapses the panel. Elements with class `adv` are hidden in student mode
   (`body.student`): File, Advanced and the stop editor.
 - **Playback bar** (`#bar`): step, play, frame slider, frame/time, speed, stop buttons
-  (Lesson mode with stops only), reset, screenshot, and our own Enter VR button
-  (`makeVRButton` in `main.js`: checks `isSessionSupported`, plain-language states such as
-  *No headset* with a tooltip on what to do, re-checks on `devicechange`, requests the
-  session and hands it to `renderer.xr.setSession`).
+  (Lesson mode with stops only), reset, screenshot, and our own Enter AR / Enter VR buttons
+  (`makeXRButton('ar' | 'vr')` in `main.js`: checks `isSessionSupported`, plain-language
+  states such as *No headset* with a tooltip on what to do, re-checks on `devicechange`,
+  requests the session and hands it to `renderer.xr.setSession`; while one session runs the
+  other button is disabled). The AR button stays hidden unless `immersive-ar` is supported.
+- **Passthrough.** In an `immersive-ar` session (`arSession`), three.js clears to
+  transparent whatever `scene.background` is (`alpha-blend` blend mode), so the room shows
+  through. `updateBackdrop()` hides the floor grid then; with `S.passthrough` off it shows
+  `backdrop`, a dark back-faced sphere (radius 40 m, drawn first) around the user, which
+  looks like VR without ending the session.
 - **Caption overlay** (`#caption`) for the active lesson stop.
 - **Drop overlay** (`#drop`) for drag-and-drop.
 - **CSS** uses a dark theme in custom properties (`--bg`, `--panel`, `--bar-h`, …) and a
@@ -271,6 +284,8 @@ for types and molecules (a 12-color Tableau-style palette, then a golden-angle h
 | State | `S` object | All mutable app state in one place (trajectory, topology, style, playback, selection) |
 | Settings | `saveSettings()` | Load/save display settings in `localStorage` |
 | Emulator | top-level `await import(iwer)` | Installs IWER when `?emulate` is present, **before** the VR button checks for XR support |
+| Offline app | `navigator.serviceWorker.register('./sw.js')`, `beforeinstallprompt` | Registers the service worker (not for `file:`, `?emulate` or `?nosw`); shows an *Install* button where the browser offers one |
+| VR start-up log | `xrLog`, `lastXRFroze`, `xrSafe` | Writes each Enter VR step to localStorage as it happens. If the last try never reached a running session (a frozen page), the next load says which step it reached and the next session asks only for `local-floor` (safe mode; `?xrsafe` forces it) |
 | Scene | renderer, camera, `OrbitControls`, `root` / `model` groups | three.js setup (section 5.1) |
 | Loading | `classify`, `loadFiles`, `loadSample`, `setTrajectory`, `applyTopology`, `fitModel` | Files → trajectory → topology → meshes |
 | View | `resetView`, `placeInFrontOfHead`, `focusAtom`, `simTime` | Camera and system placement; simulated-time formatting |
@@ -288,6 +303,27 @@ for types and molecules (a 12-color Tableau-style palette, then a golden-angle h
 
 `window.viewer` exposes state and a few helpers (`select`, `resetView`, `screenOf`,
 `menu`, `hands`) for debugging and automated browser tests.
+
+### 3.10 `sw.js`: the offline app
+
+A service worker plus `manifest.webmanifest` make the viewer an installable app that runs
+offline (the Quest 3 standalone setup in the README).
+
+- **Install:** caches the app shell (page, modules, manifest, icons, and the sample if the
+  host has it) and the pinned CDN files: three.js core, the addons `main.js` imports and
+  their dependencies (`GLTFLoader`, `BufferGeometryUtils`, `motion-controllers`), and the
+  WebXR input-profile files for Quest 3 Touch Plus controllers plus the generic fallback.
+  Each file is fetched separately with `Promise.allSettled`, so a host without the sample
+  still installs.
+- **Fetch:** app files are **network-first** with a 4 s limit and the cache as the fallback,
+  so a new upload is picked up the next time the app opens online. Version-pinned CDN URLs
+  are **cache-first**. Every page address (`?sample`, share links) is served the cached
+  page when offline. Other same-origin files (e.g. trajectories behind share links) go
+  straight to the network and are not cached; files opened from the device never touch it.
+- **Versions:** `VERSION` names the cache; bump it when the file list changes, and old
+  caches are deleted on activation.
+- `tools/build_site.py` copies exactly the shell files into `dist/` for uploading, and
+  with `--no-sample` leaves out the students' data and hides *Load sample*.
 
 ---
 
@@ -581,7 +617,7 @@ a refit or window resize. Stops are kept sorted by frame.
 ```mermaid
 stateDiagram-v2
     [*] --> Desktop
-    Desktop --> Immersive: Enter VR (makeVRButton)
+    Desktop --> Immersive: Enter VR / Enter AR (makeXRButton)
     Immersive --> Placed: first XR frame → placeInFrontOfHead(viewerPose)
     Placed --> Placed: each frame: pollGamepads → updateGrab → menu.faceHead/draw → updatePositions → updateHover → render
     Placed --> Placed: thumbstick click / menu "reset view" → needPlace
@@ -594,7 +630,7 @@ stateDiagram-v2
 | **Placement** | On session start, reads the `XRViewerPose` directly from the `XRFrame` (reliable on the first frame) and puts `root` 0.75 m in front of the head along the horizontal look direction, 15 cm below eye level, rotated to face the user. |
 | **Grab (one hand)** | On `squeezestart`, stores `offset = inverse(controller) × root`; each frame sets `root = controller × offset`. The system moves rigidly with the hand. |
 | **Grab (two hands)** | Stores the initial hand distance, the hand-to-hand direction and the root point under the midpoint. Each frame, scale = s₀·d/d₀, rotation = (quaternion turning the old hand-to-hand direction into the new one) × q₀, and the position keeps the same root point under the midpoint. |
-| **Wrist menu** (`menu`) | An 800×880 canvas on a 20×22 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch, and a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
+| **Wrist menu** (`menu`) | An 800×880 canvas on a 20×22 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch (narrowed in AR sessions to fit the *room: on/off* passthrough toggle, `MODES_AR`), and a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
 | **Ray priority** | `updateHover` raycasts the menu first (three.js `Raycaster` against one plane), then atoms. While a ray is on the menu, the trigger never picks atoms behind it. Holding the trigger on the timeline scrubs. |
 | **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
 | **Hand tracking** | Requested as an optional feature. A pinch fires `select`/`squeeze` like a controller, and the laser is hidden for hands. |
@@ -639,6 +675,7 @@ sequenceDiagram
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
 | VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel; after the UI update: the Explore/Lesson switch both ways, next stop, atoms +, water, play/pause, all by aiming the controller and pulling the trigger), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
 | Lessons and links | Browser checks: stops pause playback at the right frame, a copied share link restores mapping, settings and stops in student mode | manual / scripted |
+| Offline app | Browser check on a `dist/` build (launch config `viewer-dist`): the service worker caches all 26 files; with the server stopped, the page, three.js, the sample and its tour load; a gzipped dump (renamed, and without `.gz`), a plain dump with a data file, and XYZ all open from the file input | manual / scripted |
 | Real headset | Not yet done | see README |
 
 `tools/test_features.mjs` covers the teaching features on a hand-built water dimer: extra

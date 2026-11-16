@@ -37,6 +37,7 @@ const S = {
   stops: [],                     // lesson stops, sorted by frame
   activeStop: -1, lastFrameInt: -1,
   mode: 'explore',               // 'explore' (free) or 'lesson' (stops fire, captions show)
+  passthrough: true,             // in an AR session: show the room (false = dark backdrop, like VR)
   guessed: null,                 // { confidence, notes } from "guess elements"
   frameF: 0, playing: false, fps: 12,
   sel: [],                       // selected atom indices (up to MAX_SEL)
@@ -87,43 +88,120 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 $('viewport').appendChild(renderer.domElement);
-document.getElementById('barRight').appendChild(makeVRButton());
+// Offline app: the service worker caches the viewer so it runs without a network once
+// installed (e.g. on a Quest 3). Not for file:// pages or the emulator; ?nosw turns it off.
+if ('serviceWorker' in navigator && location.protocol !== 'file:' && !params.has('emulate') && !params.has('nosw')) {
+  navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('Offline mode unavailable', e));
+}
+// Browsers that offer installation (Chrome, Edge) get an Install button in the playback bar.
+// The Quest browser installs from its own menu instead.
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  if ($('installBtn')) return;
+  const b = document.createElement('button');
+  b.id = 'installBtn';
+  b.textContent = 'Install';
+  b.title = 'Install the viewer as an app that also works offline';
+  b.onclick = async () => { e.prompt(); await e.userChoice; b.remove(); };
+  document.getElementById('barRight').prepend(b);
+});
+
+let xrSession = null;   // the running immersive session, if any
+
+// VR start-up log: each step is written to localStorage as it happens, so if the page
+// freezes while entering VR, the next load can say which step it got stuck on, and starts the
+// next session in safe mode (no optional features). ?xrsafe forces safe mode.
+const XR_LOG_KEY = 'md-vr-viewer-xrlog';
+let xrFrames = 0;
+function xrLog(step, extra = {}) {
+  try {
+    const log = step === 'click' ? { t0: Date.now(), steps: [] } : JSON.parse(localStorage.getItem(XR_LOG_KEY) || '{"t0":0,"steps":[]}');
+    log.steps.push(`${step} +${((Date.now() - log.t0) / 1000).toFixed(1)}s`);
+    Object.assign(log, extra);
+    localStorage.setItem(XR_LOG_KEY, JSON.stringify(log));
+  } catch { /* storage unavailable */ }
+  console.info('[VR]', step);
+}
+const lastXR = (() => { try { return JSON.parse(localStorage.getItem(XR_LOG_KEY) || 'null'); } catch { return null; } })();
+// A try that never reached a running session (and didn't fail with an error) froze the page.
+const lastXRFroze = !!lastXR && !lastXR.ok && !lastXR.error && !lastXR.steps.some((st) => st.startsWith('running'));
+const xrSafe = params.has('xrsafe') || lastXRFroze;
+if (lastXRFroze) {
+  // Shown under the status line until the next VR try; the steps say where it stopped.
+  const note = document.createElement('div');
+  note.id = 'xrNote';
+  note.textContent = `The last Enter VR froze after: ${lastXR.steps.at(-1).replace(/ \+.*$/, '')}. ` +
+    'The next try starts in safe mode (fewer VR features). Steps: ' + lastXR.steps.join(' → ');
+  $('statusBox').appendChild(note);
+}
+let arSession = false;  // true when it is 'immersive-ar' (passthrough possible)
+const xrButtons = [];
+const barRight = document.getElementById('barRight');
+barRight.appendChild(makeXRButton('ar'));
+barRight.appendChild(makeXRButton('vr'));
 
 /**
- * Our own Enter VR button (in the playback bar), with plain-language states instead of
- * three.js's VRButton: checks for a headset, says what to do when there is none, and re-checks
- * when a headset is connected later.
+ * Our own Enter VR / Enter AR buttons (in the playback bar), with plain-language states instead
+ * of three.js's VRButton: they check for a headset, say what to do when there is none, and
+ * re-check when a headset is connected later. The AR button (passthrough: the molecules in your
+ * room) only appears where the browser supports 'immersive-ar', e.g. the Quest browser.
  */
-function makeVRButton() {
+function makeXRButton(kind) {
+  const ar = kind === 'ar';
+  const mode = ar ? 'immersive-ar' : 'immersive-vr';
+  const NAME = ar ? 'AR' : 'VR';
   const b = document.createElement('button');
-  b.id = 'vrBtn';
-  let session = null;
-  const set = (text, enabled, title = '') => { b.textContent = text; b.disabled = !enabled; b.title = title; b.classList.toggle('primary', enabled); };
+  b.id = ar ? 'arBtn' : 'vrBtn';
+  let supported = false;
+  const set = (text, enabled, title = '') => { b.textContent = text; b.disabled = !enabled; b.title = title; b.classList.toggle('primary', enabled && !ar); };
   const NO_HEADSET = 'No headset found. Connect one (Quest Link, Air Link, Virtual Desktop or SteamVR) and reload, ' +
     'or use the Quest browser. To try VR without a headset, add ?emulate to the address.';
+  const AR_TIP = 'Passthrough: see the molecules in your room (Quest browser). Toggle it in the wrist menu.';
   if (!navigator.xr) {
+    if (ar) { b.hidden = true; return b; }
     set(window.isSecureContext ? 'VR unavailable' : 'VR needs https', false,
       window.isSecureContext ? 'This browser has no WebXR. Use Chrome or Edge on a PC, or the Quest browser.'
         : 'WebXR only works on https:// pages or localhost.');
     return b;
   }
-  const check = () => navigator.xr.isSessionSupported('immersive-vr')
-    .then((ok) => { if (!session) set(ok ? 'Enter VR' : 'No headset', ok, ok ? 'Put on the headset and click' : NO_HEADSET); })
-    .catch(() => set('No headset', false, NO_HEADSET));
-  set('Checking VR…', false);
+  const refresh = () => {
+    if (xrSession) {
+      const mine = arSession === ar;
+      set(mine ? `Exit ${NAME}` : `Enter ${NAME}`, mine);
+      return;
+    }
+    if (ar) { b.hidden = !supported; set('Enter AR', supported, AR_TIP); return; }
+    set(supported ? 'Enter VR' : 'No headset', supported, supported ? 'Put on the headset and click' : NO_HEADSET);
+  };
+  const check = () => navigator.xr.isSessionSupported(mode)
+    .then((ok) => { supported = ok; refresh(); })
+    .catch(() => { supported = false; refresh(); });
+  b.refresh = refresh;
+  xrButtons.push(b);
+  if (ar) b.hidden = true; else set('Checking VR…', false);
   check();
   navigator.xr.addEventListener?.('devicechange', check);
   b.onclick = async () => {
-    if (session) { session.end(); return; }
+    if (xrSession) { xrSession.end(); return; }
     try {
-      const s = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'] });
-      session = s;
-      s.addEventListener('end', () => { session = null; check(); });
+      xrLog('click', { mode, safe: xrSafe, ua: navigator.userAgent });
+      const optionalFeatures = xrSafe ? ['local-floor'] : ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'];
+      xrLog(`requestSession (${optionalFeatures.join(', ')})`);
+      const s = await navigator.xr.requestSession(mode, { optionalFeatures });
+      xrLog('session granted');
+      xrFrames = 0;
+      xrSession = s;
+      arSession = ar;
+      s.addEventListener('end', () => { xrLog('session ended', { ok: xrFrames > 0 }); xrSession = null; arSession = false; updateBackdrop(); xrButtons.forEach((x) => x.refresh()); });
+      updateBackdrop();
       await renderer.xr.setSession(s);
-      set('Exit VR', true);
+      xrLog('renderer attached');
+      xrButtons.forEach((x) => x.refresh());
     } catch (e) {
-      session = null;
-      setStatus(`Could not start VR: ${e.message}`);
+      xrLog(`error: ${e.message}`, { error: e.message });
+      xrSession = null; arSession = false; updateBackdrop();
+      xrButtons.forEach((x) => x.refresh());
+      setStatus(`Could not start ${NAME}: ${e.message}`);
     }
   };
   return b;
@@ -138,6 +216,20 @@ scene.add(sun);
 
 const floor = new THREE.GridHelper(6, 24, 0x30363d, 0x1c2128);
 scene.add(floor);
+
+// In an AR session three.js always clears to transparent (the room shows through), so
+// "passthrough off" draws a dark sphere around the user instead of a background color.
+const backdrop = new THREE.Mesh(new THREE.SphereGeometry(40, 32, 16),
+  new THREE.MeshBasicMaterial({ color: 0x0d1117, side: THREE.BackSide, depthWrite: false }));
+backdrop.renderOrder = -1;
+backdrop.visible = false;
+scene.add(backdrop);
+/** Passthrough on: no floor grid or backdrop, just molecules in the room. Off: looks like VR. */
+function updateBackdrop() {
+  backdrop.visible = arSession && !S.passthrough;
+  floor.visible = !(arSession && S.passthrough);
+}
+function setPassthrough(on) { S.passthrough = on; updateBackdrop(); }
 
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
 const HOME = new THREE.Vector3(0, 1.3, -0.7); // where the system floats, ~ in front of a standing user
@@ -1907,6 +1999,9 @@ const menu = (() => {
     .map(([id, label], k) => ({ id, label, ...ROW(k), y: 456, h: 80 }));
   const MODES = [['modeExplore', () => 'Explore'], ['modeLesson', () => `Lesson${S.stops.length ? ` (${S.stops.length})` : ''}`]]
     .map(([id, label], k) => ({ id, label, x: 30 + k * 370, w: 370, y: 548, h: 56, seg: true }));
+  // In AR the switch narrows to make room for the passthrough toggle.
+  const MODES_AR = [...MODES.map((b, k) => ({ ...b, x: 30 + k * 270, w: 270 })),
+    { id: 'passthrough', label: () => (S.passthrough ? 'room: on' : 'room: off'), x: 582, w: 188, y: 548, h: 56 }];
   const GRID = {
     explore: [['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
       ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]],
@@ -1921,7 +2016,7 @@ const menu = (() => {
   const grid = (mode) => GRID[mode].map(([id, label], k) =>
     ({ id, label, ...ROW(k), y: 616 + Math.floor(k / 4) * 96, h: 84 }));
   const GRIDS = { explore: grid('explore'), lesson: grid('lesson') };
-  const visibleButtons = () => [...TRANSPORT, ...MODES, ...GRIDS[S.mode]];
+  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES), ...GRIDS[S.mode]];
   /** Sets a page control and fires its handler, so desktop and VR stay in sync. */
   const nudge = (id, d) => {
     const el = $(id);
@@ -1929,7 +2024,7 @@ const menu = (() => {
     el.dispatchEvent(new Event('input'));
   };
   const enabled = (id) => {
-    if (id === 'reset' || id === 'modeExplore' || id === 'modeLesson') return true;
+    if (id === 'reset' || id === 'modeExplore' || id === 'modeLesson' || id === 'passthrough') return true;
     if (!S.traj) return false;
     if (id === 'water') return !$('water').disabled;
     if (id === 'hb') return !$('hbonds').disabled;
@@ -1958,6 +2053,7 @@ const menu = (() => {
     if (hit.id === 'reset') { resetView(); return; }
     if (hit.id === 'modeExplore') { setMode('explore'); return; }
     if (hit.id === 'modeLesson') { setMode('lesson'); return; }
+    if (hit.id === 'passthrough') { setPassthrough(!S.passthrough); return; }
     if (!S.traj || (hit.id !== 'timeline' && !enabled(hit.id))) return;
     switch (hit.id) {
       case 'timeline':
@@ -2007,7 +2103,7 @@ const menu = (() => {
     const stop = S.stops[S.activeStop];
     const key = [S.name, f, nf, S.playing, Math.round(S.fps), S.rep, S.colorBy, S.waterMode, S.showPaths, S.hbonds,
       S.arrows, S.hbCount, sel, tm, S.activeStop, stop && stop.cap, S.stops.length, !!S.series,
-      [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked].join('|');
+      [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked, arSession, S.passthrough].join('|');
     if (key === last) return;
     last = key;
 
@@ -2082,7 +2178,7 @@ const menu = (() => {
       const hv = hover.has(b.id) && on;
       const active = (b.id === 'play' && S.playing) || (b.id === 'water' && S.waterMode !== 'all') ||
         (b.id === 'paths' && S.showPaths) || (b.id === 'hb' && S.hbonds !== 'off') || (b.id === 'arrows' && !!S.arrows) ||
-        (b.id === 'pauseStops' && $('pauseAtStops').checked) ||
+        (b.id === 'pauseStops' && $('pauseAtStops').checked) || (b.id === 'passthrough' && S.passthrough) ||
         (b.id === 'modeExplore' && S.mode === 'explore') || (b.id === 'modeLesson' && S.mode === 'lesson');
       ctx.fillStyle = hv ? '#1f6feb' : active ? (b.seg ? '#2b5a91' : '#1c3a5e') : (b.seg ? '#161b22' : '#21262d');
       ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, b.seg ? 12 : 16); ctx.fill();
@@ -2130,7 +2226,10 @@ const clock = new THREE.Clock();
 renderer.setAnimationLoop((time, frame) => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (renderer.xr.isPresenting) {
-    if (S.needPlace && placeInFrontOfHead(frame)) S.needPlace = false;
+    xrFrames++;
+    if (xrFrames === 1) xrLog('first VR frame');
+    else if (xrFrames === 90) { xrLog('running (90 frames)', { ok: true }); $('xrNote')?.remove(); }
+    if (S.needPlace && placeInFrontOfHead(frame)) { S.needPlace = false; if (xrFrames < 90) xrLog('placed'); }
     pollGamepads(dt);
     updateGrab();
     menu.faceHead();

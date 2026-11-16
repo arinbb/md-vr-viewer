@@ -51,6 +51,14 @@ WebXR only runs on `https://` pages or `localhost`.
 
   If Chrome still reports VR as unsupported, try Edge, or switch the runtime to SteamVR
   (with SteamVR running) as a fallback.
+
+  **If the page freezes** ("This page isn't responding") after *Enter VR*: close the tab,
+  open the page again and look under the status line. It says which start-up step the frozen
+  try reached (the steps are saved as they happen), and the next *Enter VR* starts in **safe
+  mode**, asking only for `local-floor` (no layers, hand tracking or bounded floor). Add
+  `?xrsafe` to the address to force safe mode. If the official WebXR samples
+  (immersive-web.github.io/webxr-samples) freeze too, the problem is the browser and runtime
+  combination, not the viewer: try Edge, or SteamVR as the OpenXR runtime.
 - **Quest standalone, during development:** connect the headset by USB with developer
   mode on, then run the command below and open `http://localhost:8137` in the Quest
   browser:
@@ -59,8 +67,52 @@ WebXR only runs on `https://` pages or `localhost`.
   adb reverse tcp:8137 tcp:8137
   ```
 
+- **Passthrough (AR):** where the browser supports it (the Quest browser on Quest 2, 3,
+  3S and Pro), an **Enter AR** button appears next to *Enter VR*. The molecules then float
+  in your real room, with no floor grid. The wrist menu's **room: on/off** button switches
+  between seeing the room and a dark VR-style backdrop without leaving the session. PC
+  browsers over Quest Link or SteamVR usually don't offer AR, so the button stays hidden
+  there.
+
 - **Classroom:** host the folder on any HTTPS static host (GitHub Pages, university
-  web space). Students just open the URL.
+  web space). Students just open the URL. See the next section for a Quest app that works
+  without a PC.
+
+### Quest 3 app (standalone, works offline)
+
+The viewer can be installed on a Quest 3 as an app with its own icon. Once installed it
+runs without a PC and without a network; students' files open from the headset's
+Downloads folder and never leave it.
+
+1. **Build the upload folder** on the PC:
+
+   ```bash
+   python tools/build_site.py --no-sample
+   ```
+
+   This writes `dist/` with only the files the app needs. `--no-sample` leaves out the
+   students' caffeine run and hides *Load sample*. Anyone with the address can download what
+   you upload, so include the sample (no flag) only if the data may be shared.
+2. **Host `dist/` on an HTTPS address.** Any static host works, for example university web
+   space, a GitHub Pages site, or Netlify (drag the folder onto app.netlify.com/drop). The
+   address can be unlisted. WebXR refuses plain `http://` on a headset.
+3. **On the Quest 3:** open the address in the Meta Quest browser, wait for the page to
+   finish loading, then choose **Install** / *Add to library* from the browser's menu (the
+   ⋮ or address-bar icon). The viewer appears in the app library.
+4. **Go offline once to check:** with Wi-Fi off, open the app. It should start, and *Enter
+   VR* should work. The app, three.js and the Quest 3 controller models are cached on
+   install.
+
+**Students' files on the headset:** download them in the Quest browser (Google Drive,
+OneDrive, Dropbox or email), then in the app use **Open files…** and pick them from
+*Downloads*. Select the dump and its `.data` file together if there is one. Supported:
+`dump custom` / `dump atom` (`.lammpstrj`, `.dump`, any name), gzipped dumps (`.gz`, even if
+the download renamed them), LAMMPS data files and `dump xyz`. The Quest budget is about
+0.8 GB of coordinates; bigger runs load every Nth frame automatically and say so.
+
+**Updating the app:** rebuild `dist/`, upload it again, and open the app once while online;
+it picks up the new version (app files are fetched network-first, with the cache as the
+offline fallback). If you change which files the app needs, bump `VERSION` in `sw.js`.
 
 **No headset?** Open `http://localhost:8137/?sample&emulate`. This loads Meta's WebXR emulator
 (IWER) into the page, so *Enter VR* works in any desktop browser with a simulated Quest 3.
@@ -177,8 +229,8 @@ frame), costing a few ms even with thousands of H-bonds.
   File section folds itself away after a file loads, unless atom types need checking.
   The – button hides the whole panel; on a phone it folds itself after loading.
 - **Playback bar** (bottom, like a video player): step, play, the frame slider, frame and
-  time, speed, previous/next lesson stop (Lesson mode), reset view, screenshot and
-  **Enter VR**.
+  time, speed, previous/next lesson stop (Lesson mode), reset view, screenshot,
+  **Enter AR** (passthrough headsets only) and **Enter VR**.
 
 ### Two modes: Explore and Lesson
 
@@ -224,7 +276,8 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
   - **Wrist menu** (on the left controller, always turned toward your eyes): point with the
     right controller and pull the trigger. Top to bottom: status, the timeline (drag to
     scrub; yellow ticks are stops), an info panel (the stop's caption in Lesson mode, else
-    the measurement plot), a step / play / step / reset row, the **Explore | Lesson** switch,
+    the measurement plot), a step / play / step / reset row, the **Explore | Lesson** switch
+    (in AR with a **room: on/off** passthrough toggle beside it),
     and eight buttons for the current mode:
     - *Explore:* style, coloring, water, H-bonds, paths, arrows, atoms −, atoms +.
     - *Lesson:* previous stop, next stop, restart, pause-at-stops on/off, style, coloring,
@@ -242,7 +295,9 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
 
 How the pieces fit together (libraries, modules, data flow, algorithms, VR
 interaction, testing, how to extend it) is documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). To have someone rebuild the project from
+scratch, hand them [docs/REBUILD_BRIEF.md](docs/REBUILD_BRIEF.md): what to build, the core
+layers, how each feature plugs in, and how to check their version.
 
 ```
 index.html            UI + import map (three.js 0.169 from jsDelivr)
@@ -260,6 +315,12 @@ tools/fixtures/       synthetic parser fixture (random-walk molecules; not physi
 tools/make_sample.py  regenerates tools/fixtures/synthetic.lammpstrj + .data
 tools/test_parser.mjs   parser, bond and wrapping tests:  node tools/test_parser.mjs
 tools/test_features.mjs columns, gzip, guessing, H-bond, shell tests:  node tools/test_features.mjs
+docs/ARCHITECTURE.md  how it is built (for maintainers)
+docs/REBUILD_BRIEF.md what to ask a programmer to build a copy from scratch
+sw.js                 service worker: offline cache for the installed (Quest) app
+manifest.webmanifest  app name, icons and colors for installing
+icons/                app icons (tools/make_icons.py draws them)
+tools/build_site.py   copies the app into dist/ for hosting (--no-sample leaves the data out)
 ```
 
 ## Known limitations / next steps

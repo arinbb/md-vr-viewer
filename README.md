@@ -5,6 +5,10 @@ headsets (WebXR). Load a dump file (plus an optional data file), then play, rota
 grab and inspect atoms. See [SCOPING.md](SCOPING.md) for why WebXR, how it compares to
 VMD/Godot/Unity/Unreal, and questions for the lab.
 
+**Live:** https://arinbb.github.io/md-vr-viewer/?sample (the app; opens the caffeine sample
+and its tour). On a Quest 3, open that address in the Quest browser to view in VR or install
+it as an app (see *Quest 3 app* below).
+
 ## Run it
 
 You need any static web server; nothing to install or build.

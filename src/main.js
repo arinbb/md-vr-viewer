@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 import { ELEMENTS, paletteColor } from './elements.js';
 import {
   parseTypeMap, resolveElements, resolveMols, bondsFromData, inferBonds, inferStableBonds, atomRadius, boxCorners,
@@ -8,6 +9,7 @@ import {
 import { buildGroups, wrapGroups, atomPath, distance, angle, dihedral, waterGroups, minImage } from './analysis.js';
 import { nearMask, hbondParticipants, findHBonds, guessElements } from './chem.js';
 import { vectorFamilies, propLabel, propValues, propRange, colormap, gradientCSS, fmt } from './props.js';
+import { updateFist, pokePanel } from './gestures.js';
 import { createRecorder, createPlayer, lessonToJSON, parseLesson, looksLikeLesson, stripVoice, fmtDur } from './voice.js';
 
 // ---------------------------------------------------------------------------
@@ -79,9 +81,14 @@ function saveSettings() {
 
 // Voice clips on lesson stops (src/voice.js). Defined early: setMode and the menu use it.
 const voice = {
-  rec: createRecorder({ onTick: (t) => { if (Math.floor(t) !== S.recTick) { S.recTick = Math.floor(t); renderVoiceState(); } } }),
+  rec: createRecorder({
+    onTick: (t) => { if (Math.floor(t) !== S.recTick) { S.recTick = Math.floor(t); renderVoiceState(); } },
+    onAutoStop: (clip) => finishVoice(clip, 'Reached the 3-minute limit. '),
+  }),
   player: createPlayer({
+    onFail: () => { voice.playingStop = null; S.voicePlaying = -1; voice.resume = false; renderVoiceState(); voiceMsg('This voice clip could not be played in this browser.'); },
     onEnd: () => {
+      voice.playingStop = null;
       S.voicePlaying = -1;
       // Playback waited for this clip: carry on (unless the user did something else meanwhile).
       if (voice.resume && S.mode === 'lesson' && !S.playing) setPlaying(true);
@@ -92,8 +99,11 @@ const voice = {
   resume: false,      // playback was paused for a clip and continues when it ends
   unsaved: false,     // clips recorded or deleted since the lesson file was last saved or opened
   pending: null,      // the stop being recorded (the moment as it was when recording started)
-  busy: false,
+  busy: false,        // the microphone is being opened
+  stopWhenReady: false, // released before recording had started: stop as soon as it does
+  playingStop: null,  // the stop whose clip is playing (S.voicePlaying is its index)
   deleteArmed: 0,     // time of the first press of "delete stop" in VR (a second press confirms)
+  deleteTarget: null, // the stop that press announced
 };
 
 // ?emulate loads Meta's WebXR emulator (IWER) so VR can be tried without a headset.
@@ -119,6 +129,15 @@ $('viewport').appendChild(renderer.domElement);
 // installed (e.g. on a Quest 3). Not for file:// pages or the emulator; ?nosw turns it off.
 if ('serviceWorker' in navigator && location.protocol !== 'file:' && !params.has('emulate') && !params.has('nosw')) {
   navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('Offline mode unavailable', e));
+  // The worker downloaded a newer version in the background: offer to switch to it.
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data !== 'md-vr-updated' || $('updateNote')) return;
+    const note = document.createElement('div');
+    note.id = 'updateNote';
+    note.innerHTML = 'A new version of the viewer is ready. <button type="button">Reload</button>';
+    note.querySelector('button').onclick = () => location.reload();
+    $('statusBox').appendChild(note);
+  });
 }
 // Browsers that offer installation (Chrome, Edge) get an Install button in the playback bar.
 // The Quest browser installs from its own menu instead.
@@ -150,8 +169,9 @@ function xrLog(step, extra = {}) {
   console.info('[VR]', step);
 }
 const lastXR = (() => { try { return JSON.parse(localStorage.getItem(XR_LOG_KEY) || 'null'); } catch { return null; } })();
-// A try that never reached a running session (and didn't fail with an error) froze the page.
-const lastXRFroze = !!lastXR && !lastXR.ok && !lastXR.error && !lastXR.steps.some((st) => st.startsWith('running'));
+// A try that never drew its first VR frame (and didn't fail with an error) froze the page while
+// starting. One that got as far as drawing and was then closed (tab closed, page reloaded) did not.
+const lastXRFroze = !!lastXR && !lastXR.ok && !lastXR.error && !lastXR.steps.some((st) => st.startsWith('first VR frame'));
 const xrSafe = params.has('xrsafe') || lastXRFroze;
 if (lastXRFroze) {
   // Shown under the status line until the next VR try; the steps say where it stopped.
@@ -210,22 +230,31 @@ function makeXRButton(kind) {
   navigator.xr.addEventListener?.('devicechange', check);
   b.onclick = async () => {
     if (xrSession) { xrSession.end(); return; }
+    if (b.dataset.busy) return;
+    b.dataset.busy = '1'; b.disabled = true; // until the session starts or fails
+    let granted = null;
     try {
       xrLog('click', { mode, safe: xrSafe, ua: navigator.userAgent });
-      const optionalFeatures = xrSafe ? ['local-floor'] : ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'];
+      // Safe mode drops the features most likely to upset a runtime (composition layers, bounded
+      // floor) but keeps hand tracking, which hand users can't do without.
+      const optionalFeatures = xrSafe ? ['local-floor', 'hand-tracking'] : ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'];
       xrLog(`requestSession (${optionalFeatures.join(', ')})`);
       const s = await navigator.xr.requestSession(mode, { optionalFeatures });
+      granted = s;
       xrLog('session granted');
       xrFrames = 0;
       xrSession = s;
       arSession = ar;
-      s.addEventListener('end', () => { xrLog('session ended', { ok: xrFrames > 0 }); xrSession = null; arSession = false; updateBackdrop(); xrButtons.forEach((x) => x.refresh()); });
+      s.addEventListener('end', () => { xrLog('session ended', { ok: true }); xrSession = null; arSession = false; updateBackdrop(); xrButtons.forEach((x) => x.refresh()); });
       updateBackdrop();
       await renderer.xr.setSession(s);
       xrLog('renderer attached');
+      delete b.dataset.busy;
       xrButtons.forEach((x) => x.refresh());
     } catch (e) {
+      delete b.dataset.busy;
       xrLog(`error: ${e.message}`, { error: e.message });
+      if (granted) granted.end().catch(() => {});
       xrSession = null; arSession = false; updateBackdrop();
       xrButtons.forEach((x) => x.refresh());
       setStatus(`Could not start ${NAME}: ${e.message}`);
@@ -255,6 +284,8 @@ scene.add(backdrop);
 function updateBackdrop() {
   backdrop.visible = arSession && !S.passthrough;
   floor.visible = !(arSession && S.passthrough);
+  // In passthrough you see your real hands; drawn ones would sit on top of them.
+  for (const h of hands) h.handModel.visible = !(arSession && S.passthrough);
 }
 function setPassthrough(on) { S.passthrough = on; updateBackdrop(); }
 
@@ -307,7 +338,7 @@ const HB_DASHES = 3;
 let hbMesh = null;
 function ensureHBMesh(nBonds) {
   if (hbMesh && hbMesh.userData.capacity >= nBonds) return;
-  if (hbMesh) { model.remove(hbMesh); hbMesh.geometry.dispose(); hbMesh.material.dispose(); }
+  if (hbMesh) disposeMesh(hbMesh);
   const capacity = Math.max(64, Math.ceil(nBonds * 1.5));
   const geo = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
   geo.translate(0, 0.5, 0);
@@ -356,9 +387,10 @@ function parseInWorker(msg, onProgress) {
 /** Decide whether a file is a data file or a trajectory from its name and first bytes. */
 async function classify(file) {
   const name = file.name.toLowerCase().replace(/\.gz$/, '');
-  if (/\.(data|lmp|dat)$/.test(name) || name.startsWith('data.')) return 'data';
   const head = (await headText(file)).trimStart();
+  if (head.startsWith('ITEM:')) return 'traj'; // a dump, whatever its name (e.g. run.dat)
   if (/\.json$/.test(name) || looksLikeLesson(head)) return 'lesson';
+  if (/\.(data|lmp|dat)$/.test(name) || name.startsWith('data.')) return 'data';
   if (head.startsWith('ITEM:') || /^\d+\s*\r?\n/.test(head)) return 'traj';
   if (/^\s*\d+\s+atoms\s*$/m.test(head)) return 'data';
   return 'traj';
@@ -380,12 +412,12 @@ let loadSeq = 0;
 async function loadFiles(files) {
   const mySeq = ++loadSeq; // a newer load supersedes this one
   files = [...files];
-  const kinds = await Promise.all(files.map(classify));
-  const trajFile = files.find((_, i) => kinds[i] === 'traj');
-  const dataFile = files.find((_, i) => kinds[i] === 'data');
-  const lessonFile = files.find((_, i) => kinds[i] === 'lesson');
   const stride = Math.max(1, parseInt($('stride').value, 10) || 1);
   try {
+    const kinds = await Promise.all(files.map(classify)); // throws for e.g. a corrupt .gz
+    const trajFile = files.find((_, i) => kinds[i] === 'traj');
+    const dataFile = files.find((_, i) => kinds[i] === 'data');
+    const lessonFile = files.find((_, i) => kinds[i] === 'lesson');
     let lesson = null;
     if (lessonFile) {
       lesson = parseLesson(await lessonFile.text());
@@ -398,7 +430,8 @@ async function loadFiles(files) {
       setStatus(`Reading data file ${dataFile.name}…`);
       data = await parseInWorker({ kind: 'data', file: dataFile });
       S.dataName = dataFile.name;
-    } else if (trajFile) {
+      S.dataWaiting = !trajFile && !S.traj; // opened first; its trajectory comes next
+    } else if (trajFile && !S.dataWaiting) {
       data = null; // a new trajectory without a data file: drop old topology
       S.dataName = null;
     }
@@ -411,6 +444,7 @@ async function loadFiles(files) {
       S.data = data;
       S.name = trajFile.name;
       if (traj.stride !== stride) $('stride').value = String(traj.stride);
+      S.dataWaiting = false;
       setTrajectory(traj, ((performance.now() - t0) / 1000).toFixed(1));
       if (lesson) applyLesson(lesson, lessonFile.name);
     } else if (S.traj) {
@@ -418,9 +452,11 @@ async function loadFiles(files) {
       S.data = data;
       setTrajectory(S.traj); // re-apply topology to the current trajectory
     } else {
+      if (mySeq !== loadSeq) return;
       S.data = data;
       setStatus('Data file loaded. Now open a trajectory (dump) file.');
     }
+    if (lesson && !trajFile) applyLesson(lesson, lessonFile.name); // a lesson opened with a data file
   } catch (err) {
     console.error(err);
     if (mySeq === loadSeq) setStatus(`Error: ${err.message}`);
@@ -560,7 +596,9 @@ function applyTopology() {
   $('hideWaterInfo').textContent = nWater ? `${nWater.toLocaleString()} water molecules` : 'No water found.';
   $('water').disabled = !nWater;
   $('water').querySelector('option[value="near"]').disabled = !S.soluteIdx.length; // pure water: nothing to be near
-  if ((!nWater && S.waterMode !== 'all') || (S.waterMode === 'near' && !S.soluteIdx.length)) setWater('all');
+  // Reset water modes that make no sense for this file: nothing to be near, or (pure water)
+  // hiding the water would hide everything.
+  if ((!nWater && S.waterMode !== 'all') || (S.waterMode !== 'all' && !S.soluteIdx.length)) setWater('all');
   $('hbonds').disabled = !S.hb.hd.length;
   updateBondInfo();
   renderTypeTable();
@@ -658,7 +696,11 @@ function simTime(step) {
   return `${(fs / 1e6).toFixed(fs < 1e7 ? 3 : 2)} ns`;
 }
 
-function disposeMesh(m) { if (m) { model.remove(m); m.geometry.dispose(); m.material.dispose(); } }
+function disposeMesh(m) {
+  if (!m) return;
+  model.remove(m); m.geometry.dispose(); m.material.dispose();
+  if (m.dispose) m.dispose(); // InstancedMesh: frees the per-instance matrix/color GPU buffers
+}
 
 function buildMeshes() {
   disposeMesh(atomMesh); disposeMesh(boxLines);
@@ -1184,7 +1226,7 @@ function updateArrows(cur, i0) {
     let dx = ax[i], dy = ay[i], dz = az[i];
     const mag = Math.hypot(dx, dy, dz);
     const len = Math.min(mag * k, 6);
-    if (!V[i] || len < 0.05) { m.fill(0, o, o + 16); continue; }
+    if (!V[i] || !(len >= 0.05)) { m.fill(0, o, o + 16); continue; } // hidden, tiny or NaN
     dx /= mag; dy /= mag; dz /= mag;
     let ux, uy, uz;
     if (Math.abs(dy) < 0.9) { ux = dz; uy = 0; uz = -dx; } else { ux = 0; uy = -dz; uz = dy; }
@@ -1208,9 +1250,26 @@ function writeBondMatrix(m, o, c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z, tx, 
 
 const atomPos = (i) => [S.cur[3 * i], S.cur[3 * i + 1], S.cur[3 * i + 2]];
 
+/**
+ * Positions of the selected atoms for measuring: the first as drawn, the others at their nearest
+ * periodic image to it (as in computeSeries), so the label, the lines and the plot agree even
+ * when the atoms are drawn on opposite sides of the box.
+ */
+function measurePoints() {
+  const s = S.sel;
+  const P0 = atomPos(s[0]);
+  const box = S.traj.frames[Math.min(Math.floor(S.frameF), S.traj.frames.length - 1)].box;
+  const d = [0, 0, 0];
+  return s.map((i, k) => {
+    const p = atomPos(i);
+    if (!k || !box) return p;
+    minImage(box, p[0] - P0[0], p[1] - P0[1], p[2] - P0[2], d);
+    return [P0[0] + d[0], P0[1] + d[1], P0[2] + d[2]];
+  });
+}
 function measurementText() {
   const s = S.sel;
-  const P = s.map(atomPos);
+  const P = measurePoints();
   const name = (i) => `${S.elements[i]}${S.traj.ids[i]}`;
   if (s.length === 2) return `distance ${name(s[0])}–${name(s[1])}: ${distance(P[0], P[1]).toFixed(2)} Å`;
   if (s.length === 3) return `angle ${s.map(name).join('–')}: ${angle(P[0], P[1], P[2]).toFixed(1)}°`;
@@ -1276,7 +1335,7 @@ function plotSeries(ctx, x0, y0, w, h, big) {
   // Stops as ticks along the bottom.
   ctx.fillStyle = '#58a6ff';
   for (const st of S.stops) ctx.fillRect(X(st.f) - 1.5, y0 + h - (big ? 12 : 8), 3, big ? 12 : 8);
-  const f = Math.min(nf - 1, Math.round(S.frameF));
+  const f = Math.min(nf - 1, Math.floor(S.frameF));
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = big ? 2 : 1.5;
   ctx.beginPath(); ctx.moveTo(X(f), y0); ctx.lineTo(X(f), y0 + h); ctx.stroke();
   ctx.fillStyle = '#ffffff';
@@ -1299,7 +1358,7 @@ function drawPlot() {
   const ctx = c.getContext('2d');
   ctx.clearRect(0, 0, c.width, c.height);
   plotSeries(ctx, 0, 0, c.width, c.height, false);
-  const f = Math.min(S.series.values.length - 1, Math.round(S.frameF));
+  const f = Math.min(S.series.values.length - 1, Math.floor(S.frameF));
   $('plotTitle').textContent = `${S.series.label} over time · now ${fmtVal(S.series.values[f])} ${S.series.unit} (click to jump)`;
 }
 
@@ -1365,15 +1424,16 @@ function updateSelectionGeometry(i0, t) {
     h.visible = i !== undefined;
     if (!h.visible) return;
     h.position.fromArray(S.cur, 3 * i);
-    h.scale.setScalar(Math.max(R[i], 0.3) * 1.25 + 0.15);
+    h.scale.setScalar(Math.max(drawRadius(i), 0.3) * 1.25 + 0.15); // fits a water bead at Low detail
   });
   measureLines.visible = S.sel.length > 1;
   if (measureLines.visible) {
     const a = measureLines.geometry.attributes.position.array;
     a.fill(0);
-    for (let k = 0; k + 1 < S.sel.length; k++) {
-      a.set(atomPos(S.sel[k]), 6 * k);
-      a.set(atomPos(S.sel[k + 1]), 6 * k + 3);
+    const P = measurePoints();
+    for (let k = 0; k + 1 < P.length; k++) {
+      a.set(P[k], 6 * k);
+      a.set(P[k + 1], 6 * k + 3);
     }
     measureLines.geometry.attributes.position.needsUpdate = true;
   }
@@ -1512,6 +1572,7 @@ document.addEventListener('pointerup', (e) => { const b = e.target.closest && e.
 window.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl+R, Ctrl+P etc. stay the browser's
   if (!S.traj) return;
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!S.playing); }
   else if (e.code === 'ArrowRight') { setPlaying(false); stepFrame(1); }
@@ -1542,7 +1603,7 @@ function saveScreenshot() {
 
 function stepFrame(d) {
   const nf = S.traj.frames.length;
-  S.frameF = (Math.round(S.frameF) + d + nf) % nf;
+  S.frameF = (Math.floor(S.frameF) + d + nf) % nf;
   S.dirty = true;
 }
 
@@ -1670,7 +1731,7 @@ $('shellR').value = String(S.shellR); $('arrowScale').value = String(S.arrowScal
 /** Snapshot of the current moment. Camera is stored in model coordinates so it survives refits. */
 function captureStop(caption) {
   const st = {
-    f: Math.round(S.frameF),
+    f: Math.min(Math.floor(S.frameF), S.traj.frames.length - 1),
     cap: caption,
     sel: S.sel.map((i) => S.traj.ids[i]),
     v: { rep: S.rep, color: S.colorBy, water: S.waterMode, shell: S.shellR, hb: S.hbonds, arrows: S.arrows, paths: S.showPaths },
@@ -1706,6 +1767,15 @@ function applyStop(k, { playback = false } = {}) {
   S.dirty = true;
 }
 
+/** Active stop = the latest at or before the frame shown (Lesson mode), after stops changed. */
+function refreshActiveStop() {
+  if (S.mode !== 'lesson' || !S.traj) { setActiveStop(-1); return; }
+  const f = Math.floor(S.frameF);
+  let a = -1;
+  for (let k = 0; k < S.stops.length; k++) if (S.stops[k].f <= f) a = k;
+  setActiveStop(a);
+}
+
 function setActiveStop(k) {
   S.activeStop = k;
   const st = S.stops[k];
@@ -1722,6 +1792,7 @@ function setActiveStop(k) {
 }
 
 function renderStops() {
+  if (voice.playingStop) S.voicePlaying = S.stops.indexOf(voice.playingStop); // indices move on insert/delete
   $('stopList').innerHTML = S.stops.map((st, k) =>
     `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span class="t" title="${esc(st.cap || '')}">${esc(st.cap || (st.voice ? '(voice note)' : '(no caption)'))}</span>` +
     (st.voice ? `<span class="v" title="Play or stop the voice clip">${S.voicePlaying === k ? '■' : '▶'} ${fmtDur(st.voice.dur)}</span>` : '') +
@@ -1752,7 +1823,7 @@ function setMode(mode, { restore = true } = {}) {
     if (sec) sec.open = true;
     if (!S.stops.length) { const ed = $('editStops'); if (ed) ed.open = true; }
     if (restore && S.traj && S.stops.length) {
-      const f = Math.round(S.frameF);
+      const f = Math.floor(S.frameF);
       let k = -1;
       for (let j = 0; j < S.stops.length; j++) if (S.stops[j].f <= f) k = j;
       if (k >= 0) applyStop(k, { playback: true }); else setActiveStop(-1);
@@ -1775,6 +1846,7 @@ $('modeLesson').onclick = () => setMode('lesson');
 
 function addStop(st) {
   S.sampleTour = false; // edited stops are the user's own lesson now
+  voice.unsaved = true;
   S.stops.push(st);
   S.stops.sort((a, b) => a.f - b.f);
   renderStops();
@@ -1787,10 +1859,11 @@ $('stopList').addEventListener('click', (e) => {
   const k = +li.dataset.k;
   if (e.target.classList.contains('x')) {
     if (!confirm(`Delete stop ${k + 1}${S.stops[k].cap ? ` ("${S.stops[k].cap.slice(0, 40)}")` : ''}${S.stops[k].voice ? ' and its voice clip' : ''}?`)) return;
-    if (S.stops[k].voice) voice.unsaved = true;
+    voice.unsaved = true;
     stopVoice();
     S.stops.splice(k, 1);
     renderStops();
+    refreshActiveStop();
     return;
   }
   if (e.target.classList.contains('v')) {
@@ -1810,14 +1883,15 @@ $('updateStop').onclick = () => {
   const k = S.activeStop;
   if (k < 0 || !S.traj) return;
   const old = S.stops.splice(k, 1)[0];
-  const st = captureStop($('stopCaption').value.trim());
+  // An empty caption box keeps the stop's caption (the box is cleared after Add stop).
+  const st = captureStop($('stopCaption').value.trim() || old.cap || '');
   if (old.voice) st.voice = old.voice; // updating the view or caption keeps the clip
   addStop(st);
 };
 function gotoStop(dir) {
   if (!S.stops.length || !S.traj) return;
   if (S.mode !== 'lesson') setMode('lesson', { restore: false });
-  const f = Math.round(S.frameF);
+  const f = Math.floor(S.frameF);
   let k;
   if (dir > 0) {
     k = S.stops.findIndex((s, j) => s.f > f || (s.f === f && j > S.activeStop));
@@ -1848,7 +1922,7 @@ const b64dec = (str) => {
 };
 
 /** Where the current files came from (URL when opened from a link, else just the file name). */
-const source = { traj: params.get('traj'), data: params.get('data') };
+const source = { traj: params.get('traj'), data: params.get('data'), lesson: params.get('lesson') };
 /** User-picked files: they have no URL for share links, and the sample's tour does not apply to them. */
 function openLocal(files) {
   if ([...files].every((f) => /\.json$/i.test(f.name))) { loadFiles(files); return; } // just a lesson file
@@ -1876,6 +1950,7 @@ function shareLink() {
   if (S.hbonds !== 'off') add('hb', S.hbonds);
   if (S.arrows) add('arrows', S.arrows);
   if (S.stops.length) add('stops', b64enc(stripVoice(S.stops)));
+  if (source.lesson && !voice.unsaved) add('lesson', source.lesson); // unchanged lesson from a link: keep its voice
   if ($('linkStudent').checked) add('student', '');
   return { url: `${location.origin}${location.pathname}?${q.join('&')}`, local };
 }
@@ -1884,6 +1959,7 @@ $('copyLink').onclick = async () => {
   const { url, local } = shareLink();
   let copied = false;
   try { await navigator.clipboard.writeText(url); copied = true; } catch { /* insecure context etc. */ }
+  if (!S.stops.some((st) => st.voice)) voice.unsaved = false; // the link holds the whole lesson
   $('linkInfo').innerHTML = (copied ? 'Link copied. ' : 'Copy this link: ') +
     (local ? `It expects <code>${esc(S.name)}</code>${S.dataName ? ` and <code>${esc(S.dataName)}</code>` : ''} next to <code>index.html</code> on the server. ` : '') +
     (S.stops.some((st) => st.voice) ? 'Voice clips are not in links: use <b>Save lesson file</b> and share that file too (or host it and add <code>&amp;lesson=</code> its address). ' : '') +
@@ -1896,7 +1972,7 @@ $('copyLink').onclick = async () => {
 /** The stop at the current frame, else (in Lesson mode) the active one; -1 if none. */
 function stopIndexHere() {
   if (!S.traj) return -1;
-  const f = Math.round(S.frameF);
+  const f = Math.floor(S.frameF);
   const k = S.stops.findIndex((st) => st.f === f);
   return k >= 0 ? k : S.mode === 'lesson' ? S.activeStop : -1;
 }
@@ -1928,11 +2004,13 @@ async function startVoice() {
   setPlaying(false);
   stopVoice();
   voice.pending = captureStop('');
+  voice.stopWhenReady = false;
   try {
     await voice.rec.start();
     S.recTick = 0;
     buzz();
     voiceMsg('Recording… release (or click Stop) when you are done.');
+    if (voice.stopWhenReady) { voice.busy = false; finishVoice(); return; } // released while the mic was opening
   } catch (e) {
     voice.pending = null;
     voiceMsg(e && e.name === 'NotAllowedError'
@@ -1942,24 +2020,34 @@ async function startVoice() {
   voice.busy = false;
   renderVoiceState();
 }
-/** Stops recording and puts the clip on the stop at that frame (a re-take keeps the caption). */
-async function finishVoice() {
-  if (!voice.rec.recording) return;
-  const clip = await voice.rec.stop();
+/**
+ * Stops recording and puts the clip on the stop at that frame: a re-take replaces only the clip
+ * (the stop keeps its caption, camera and settings); otherwise a new stop is made from the moment
+ * saved when recording started. autoClip: the recorder stopped by itself (3-minute limit).
+ */
+async function finishVoice(autoClip, prefix = '') {
+  let clip;
+  if (autoClip === undefined) {
+    if (!voice.rec.recording) { if (voice.busy) voice.stopWhenReady = true; return; }
+    clip = await voice.rec.stop();
+  } else clip = autoClip;
   buzz();
   const st = voice.pending;
   voice.pending = null;
   renderVoiceState();
   if (!clip || !st) { voiceMsg('Too short: hold the button for as long as you talk.'); return; }
-  st.voice = clip;
   const k = S.stops.findIndex((x) => x.f === st.f);
-  if (k >= 0) { st.cap = S.stops[k].cap; S.stops[k] = st; } else { S.stops.push(st); S.stops.sort((a, b) => a.f - b.f); }
+  let target;
+  if (k >= 0) { target = S.stops[k]; target.voice = clip; } else {
+    target = st; target.voice = clip;
+    S.stops.push(target); S.stops.sort((a, b) => a.f - b.f);
+  }
   S.sampleTour = false; // it's the user's own lesson now
   voice.unsaved = true;
   if (S.mode !== 'lesson') setMode('lesson', { restore: false });
   renderStops();
-  setActiveStop(S.stops.indexOf(st));
-  voiceMsg(`Voice clip on stop ${S.stops.indexOf(st) + 1} (${fmtDur(clip.dur)}). Save the lesson file to keep it.`);
+  setActiveStop(S.stops.indexOf(target));
+  voiceMsg(`${prefix}Voice clip on stop ${S.stops.indexOf(target) + 1} (${fmtDur(clip.dur)}). Save the lesson file to keep it.`);
 }
 /** Plays stop k's clip. wait: pause playback until it ends, then carry on. */
 function playVoice(k, { wait = false } = {}) {
@@ -1967,30 +2055,39 @@ function playVoice(k, { wait = false } = {}) {
   if (!st || !st.voice || voice.rec.recording || S.mode !== 'lesson') return;
   if (!voice.player.play(k, st.voice)) return;
   S.voicePlaying = k;
+  voice.playingStop = st;
+  voice.resume = false; // a new clip cancels any "carry on after the clip" of an earlier one
   if (wait && S.playing) { setPlaying(false); voice.resume = true; }
   renderVoiceState();
 }
 function stopVoice() {
   voice.player.stop();
+  voice.playingStop = null;
   S.voicePlaying = -1;
   voice.resume = false;
   renderVoiceState();
 }
 /** VR: delete the stop here; the first press arms it, a second press within 3 s deletes. */
 function deleteStopHere() {
-  const k = stopIndexHere();
-  if (k < 0) return;
-  if (performance.now() - voice.deleteArmed > 3000) {
-    voice.deleteArmed = performance.now();
+  // The second press deletes the stop the first press announced, even if playback moved on.
+  const armed = performance.now() - voice.deleteArmed <= 3000 && S.stops.includes(voice.deleteTarget);
+  if (!armed) {
+    const k = stopIndexHere();
+    if (k < 0) return;
+    const stamp = performance.now();
+    voice.deleteArmed = stamp;
+    voice.deleteTarget = S.stops[k];
     vrNote(`Press delete again to remove stop ${k + 1}${S.stops[k].voice ? ' and its voice clip' : ''}`);
-    setTimeout(() => { voice.deleteArmed = 0; }, 3100);
+    setTimeout(() => { if (voice.deleteArmed === stamp) voice.deleteArmed = 0; }, 3100);
     return;
   }
-  voice.deleteArmed = 0;
-  if (S.stops[k].voice) voice.unsaved = true;
+  const k = S.stops.indexOf(voice.deleteTarget);
+  voice.deleteArmed = 0; voice.deleteTarget = null;
+  voice.unsaved = true;
   stopVoice();
   S.stops.splice(k, 1);
   renderStops();
+  refreshActiveStop();
   vrNote(`Stop ${k + 1} deleted`);
 }
 /** Replaces the stops with a lesson file's (after its trajectory, if both were opened). */
@@ -2000,6 +2097,7 @@ function applyLesson(lesson, name) {
   S.activeStop = -1;
   S.sampleTour = false;
   voice.unsaved = false;
+  source.lesson = null; // set again by lessonFromLink when it came from a link
   if (lesson.meta.fs && !S.fsPerStep) { S.fsPerStep = +lesson.meta.fs || 0; $('fsPerStep').value = String(S.fsPerStep || ''); }
   renderStops();
   setMode('lesson');
@@ -2029,9 +2127,10 @@ $('saveLesson').onclick = async () => {
   voiceMsg(`Saved ${a.download} (${(text.length / 1e6).toFixed(2)} MB). Open it together with the trajectory to play the lesson.`);
 };
 if (!voice.rec.supported) { $('recVoice').disabled = true; $('allowMic').disabled = true; $('recVoice').title = 'This browser cannot record audio'; }
-// Recorded clips live only in this page until the lesson file is saved.
+// Edited stops and recorded clips live only in this page until the lesson file is saved
+// (or, without clips, a share link is copied).
 window.addEventListener('beforeunload', (e) => {
-  if (voice.unsaved && S.stops.some((st) => st.voice)) { e.preventDefault(); e.returnValue = ''; }
+  if (voice.unsaved && S.stops.length) { e.preventDefault(); e.returnValue = ''; }
 });
 
 let dragDepth = 0;
@@ -2047,6 +2146,7 @@ window.addEventListener('drop', (e) => {
 // VR input
 
 const controllerFactory = new XRControllerModelFactory();
+const handFactory = new XRHandModelFactory();
 const hands = [];
 for (let k = 0; k < 2; k++) {
   const ctrl = renderer.xr.getController(k);
@@ -2061,14 +2161,24 @@ for (let k = 0; k < 2; k++) {
   const grip = renderer.xr.getControllerGrip(k);
   grip.add(controllerFactory.createControllerModel(grip));
   scene.add(grip);
+  // Tracked hands: a skinned hand model (loaded from the WebXR input-profiles CDN) and joints.
+  const hand = renderer.xr.getHand(k);
+  const handModel = handFactory.createHandModel(hand, 'mesh');
+  hand.add(handModel);
+  scene.add(hand);
   const hover = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 8), new THREE.MeshBasicMaterial({ color: 0x58a6ff }));
   hover.visible = false;
   scene.add(hover);
-  const h = { ctrl, grip, ray, hover, source: null, prevButtons: [], hit: null, flicked: false };
+  const h = {
+    ctrl, grip, ray, hover, hand, handModel, source: null, prevButtons: [], hit: null, flicked: false,
+    fist: false, poke: {}, pokeHit: null, pendingPick: undefined, fistDuringPinch: false,
+  };
   hands.push(h);
   ctrl.addEventListener('connected', (e) => {
     h.source = e.data;
-    ray.visible = !e.data.hand; // hand-tracking: no laser
+    ray.visible = true; // hands get a pointing ray too: without it you can't tell where a pinch lands
+    ray.material.opacity = e.data.hand ? 0.45 : 0.7;
+    h.fist = false; h.poke = {};
     placeWristPanel();
   });
   ctrl.addEventListener('disconnected', () => {
@@ -2078,15 +2188,31 @@ for (let k = 0; k < 2; k++) {
   ctrl.addEventListener('selectstart', () => {
     if (h.menuHit) { // the ray is on the wrist menu: press a button / grab the timeline, never pick behind it
       h.menuDown = h.menuHit.id;
-      if (h.menuHit.id) menu.press(h.menuHit);
+      if (h.menuHit.id) { menu.press(h.menuHit); if (h.source && h.source.hand) uiClick(); }
       return;
     }
     const hit = rayHit(h);
+    if (h.source && h.source.hand) {
+      // Hands: closing a fist can brush thumb and index together (a pinch). Pick on release
+      // instead, and only if no fist was made meanwhile, so grabbing doesn't clear the selection.
+      h.pendingPick = hit ? hit.index : -1;
+      h.fistDuringPinch = h.fist;
+      return;
+    }
     pickAction(hit ? hit.index : -1, false);
   });
-  ctrl.addEventListener('selectend', () => { if (h.menuDown) menu.release(h.menuDown); h.menuDown = null; });
-  ctrl.addEventListener('squeezestart', () => { grabbers.add(h); beginGrab(); });
-  ctrl.addEventListener('squeezeend', () => { grabbers.delete(h); beginGrab(); });
+  ctrl.addEventListener('selectend', () => {
+    if (h.menuDown) menu.release(h.menuDown);
+    h.menuDown = null;
+    if (h.pendingPick !== undefined) {
+      if (!h.fistDuringPinch && !h.fist) pickAction(h.pendingPick, false);
+      h.pendingPick = undefined;
+    }
+  });
+  // Controllers grab with the grip button. Hands grab with a closed fist (updateHands), not with
+  // the browser's squeeze, which hands may or may not send.
+  ctrl.addEventListener('squeezestart', () => { if (h.source && h.source.hand) return; grabbers.add(h); beginGrab(); });
+  ctrl.addEventListener('squeezeend', () => { if (h.source && h.source.hand) return; grabbers.delete(h); beginGrab(); });
 }
 
 const _ro = new THREE.Vector3(), _rd = new THREE.Vector3(), _rq = new THREE.Quaternion();
@@ -2129,7 +2255,7 @@ function updateHover() {
       h.ray.scale.z = 2;
     }
   }
-  menu.setHover(hands.map((h) => h.menuHit && h.menuHit.id).filter(Boolean));
+  menu.setHover([...hands.map((h) => h.menuHit && h.menuHit.id), ...hands.map((h) => h.pokeHit)].filter(Boolean));
 }
 
 // Grab: one hand moves/rotates the system rigidly; two hands also scale it.
@@ -2138,13 +2264,19 @@ const G = { offset: new THREE.Matrix4(), q0: new THREE.Quaternion(), s0: 1, d0: 
   dir0: new THREE.Vector3(), localMid: new THREE.Vector3() };
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _m4 = new THREE.Matrix4();
 
+/** What a grab follows: the controller, or the wrist of a tracked hand (steadier than its ray). */
+function anchorOf(h) {
+  const w = h.source && h.source.hand && h.hand.joints && h.hand.joints.wrist;
+  return w && w.visible ? w : h.ctrl;
+}
 function beginGrab() {
   const g = [...grabbers];
   root.updateMatrix();
   if (g.length === 1) {
-    G.offset.copy(g[0].ctrl.matrixWorld).invert().multiply(root.matrix);
+    anchorOf(g[0]).updateWorldMatrix(true, false);
+    G.offset.copy(anchorOf(g[0]).matrixWorld).invert().multiply(root.matrix);
   } else if (g.length >= 2) {
-    g[0].ctrl.getWorldPosition(_a); g[1].ctrl.getWorldPosition(_b);
+    anchorOf(g[0]).getWorldPosition(_a); anchorOf(g[1]).getWorldPosition(_b);
     G.d0 = Math.max(_a.distanceTo(_b), 1e-3);
     G.dir0.subVectors(_b, _a).normalize();
     G.q0.copy(root.quaternion);
@@ -2157,10 +2289,10 @@ function beginGrab() {
 function updateGrab() {
   const g = [...grabbers];
   if (g.length === 1) {
-    _m4.multiplyMatrices(g[0].ctrl.matrixWorld, G.offset);
+    _m4.multiplyMatrices(anchorOf(g[0]).matrixWorld, G.offset);
     _m4.decompose(root.position, root.quaternion, _a);
   } else if (g.length >= 2) {
-    g[0].ctrl.getWorldPosition(_a); g[1].ctrl.getWorldPosition(_b);
+    anchorOf(g[0]).getWorldPosition(_a); anchorOf(g[1]).getWorldPosition(_b);
     const d = Math.max(_a.distanceTo(_b), 1e-3);
     const dir = new THREE.Vector3().subVectors(_b, _a).normalize();
     const s = THREE.MathUtils.clamp(G.s0 * d / G.d0, 0.05, 40);
@@ -2170,6 +2302,65 @@ function updateGrab() {
     root.scale.setScalar(s);
     root.position.copy(mid).sub(G.localMid.clone().multiplyScalar(s).applyQuaternion(q));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Hand tracking: fists grab (like grip buttons), a fingertip pokes wrist-menu buttons, and a
+// short click confirms presses (hands have no vibration).
+
+let clickCtx = null;
+/** A short click for button presses made with hands. */
+function uiClick(freq = 1500) {
+  try {
+    clickCtx = clickCtx || new AudioContext();
+    if (clickCtx.state === 'suspended') clickCtx.resume();
+    const t = clickCtx.currentTime, o = clickCtx.createOscillator(), g = clickCtx.createGain();
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    o.connect(g).connect(clickCtx.destination);
+    o.start(t); o.stop(t + 0.06);
+  } catch { /* no audio: presses still work */ }
+}
+
+const _tip = new THREE.Vector3();
+function updateHands() {
+  for (const h of hands) {
+    if (!h.source || !h.source.hand) continue;
+    const J = h.hand.joints || {};
+    const joint = (name) => (J[name] && J[name].visible ? J[name].position : null);
+    // Fist → grab. fistOverride lets automated tests stand in for a real fist.
+    const changed = h.fistOverride !== undefined
+      ? (h.fist !== h.fistOverride && ((h.fist = h.fistOverride), true))
+      : updateFist(h, joint);
+    if (changed) {
+      if (h.fist) { grabbers.add(h); if (h.pendingPick !== undefined) h.fistDuringPinch = true; uiClick(700); }
+      else grabbers.delete(h);
+      beginGrab();
+    }
+    // Fingertip poke on the wrist menu (not with the hand wearing it).
+    h.pokeHit = null;
+    const tip = J['index-finger-tip'];
+    if (!menu.mesh.parent || isMenuHolder(h) || !tip || !tip.visible) { if (h.poke.down) endPoke(h); continue; }
+    tip.getWorldPosition(_tip);
+    menu.mesh.worldToLocal(_tip);
+    const { width, height } = menu.mesh.geometry.parameters;
+    const p = pokePanel(h.poke, _tip, width, height);
+    const hit = p.uv ? menu.hitTest(p.uv) : null;
+    if (p.hover && hit && hit.id) h.pokeHit = hit.id;
+    if (p.press && hit && hit.id) { h.pokeDown = hit.id; menu.press(hit); uiClick(); }
+    else if (h.poke.down && h.pokeDown === 'timeline' && hit && hit.id === 'timeline') menu.press(hit); // slide to scrub
+    if (p.release) endPoke(h);
+  }
+}
+function endPoke(h) {
+  h.poke.down = false;
+  if (h.pokeDown) menu.release(h.pokeDown);
+  h.pokeDown = null;
+}
+function isMenuHolder(h) {
+  const parent = menu.mesh.parent;
+  return parent === h.grip || (h.hand && parent && parent.parent === h.hand);
 }
 
 function pollGamepads(dt) {
@@ -2379,7 +2570,8 @@ const menu = (() => {
     const key = [S.name, f, nf, S.playing, Math.round(S.fps), S.rep, S.colorBy, S.waterMode, S.showPaths, S.hbonds,
       S.arrows, S.hbCount, sel, tm, S.activeStop, stop && stop.cap, S.stops.length, !!S.series,
       [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked, arSession, S.passthrough, S.detail, S.level, S.vrNote,
-      voice.rec.recording, S.recTick, S.voicePlaying, voice.deleteArmed, $('waitVoice').checked, stop && !!stop.voice].join('|');
+      voice.rec.recording, S.recTick, S.voicePlaying, voice.deleteArmed, $('waitVoice').checked, stop && stop.voice && stop.voice.dur,
+      inputKind()].join('|');
     if (key === last) return;
     last = key;
 
@@ -2472,8 +2664,9 @@ const menu = (() => {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#8b949e';
     ctx.font = '23px system-ui, sans-serif';
-    ctx.fillText('grip: grab & move · both grips: scale/rotate · trigger: pick atoms', 30, 924);
-    ctx.fillText('A/X play · B frame ▶ · Y frame ◀ · R stick: scrub · click: reset', 30, 958);
+    const [hint1, hint2] = INPUT_HINTS[inputKind()];
+    ctx.fillText(hint1, 30, 924);
+    ctx.fillText(hint2, 30, 958);
     tex.needsUpdate = true;
   }
 
@@ -2485,6 +2678,21 @@ const menu = (() => {
     mesh.lookAt(_head); // +Z (the readable side) toward the eyes, whatever the wrist angle
   }
 
+  /** What is in the user's hands, for the hint lines at the bottom. */
+  function inputKind() {
+    const src = hands.map((h) => h.source).filter(Boolean);
+    if (src.some((x) => x.hand)) return 'hands';
+    if (src.some((x) => (x.profiles || []).some((p) => p.includes('touchpad')) && !(x.profiles || []).some((p) => p.includes('thumbstick')))) return 'touchpad';
+    return 'sticks';
+  }
+  const INPUT_HINTS = {
+    sticks: ['grip: grab & move · both grips: scale/rotate · trigger: pick atoms',
+      'A/X play · B frame ▶ · Y frame ◀ · R stick: scrub · click: reset'],
+    touchpad: ['grip: grab & move · both grips: scale/rotate · trigger: pick atoms',
+      'R trackpad: touch to scrub, press to reset · play and stops: this menu'],
+    hands: ['pinch: pick atoms and press buttons · fist: grab · two fists: scale/turn',
+      'or poke a button with your fingertip · play, step and stops: this menu'],
+  };
   /** Trigger released while it was held on a button (hold-to-talk ends here). */
   function release(id) { if (id === 'rec') finishVoice(); }
   return { mesh, canvas, hitTest, press, release, draw, faceHead, setHover(ids) { hover = new Set(ids); } };
@@ -2493,8 +2701,11 @@ const menu = (() => {
 function placeWristPanel() {
   const live = hands.filter((h) => h.source);
   const target = live.find((h) => h.source.handedness === 'left') || live[0];
-  if (target) target.grip.add(menu.mesh);
-  else if (menu.mesh.parent) menu.mesh.parent.remove(menu.mesh);
+  if (!target) { if (menu.mesh.parent) menu.mesh.parent.remove(menu.mesh); return; }
+  // A tracked hand wears the menu on its wrist joint; a controller on its grip.
+  const wrist = target.source.hand && target.hand.joints && target.hand.joints.wrist;
+  const parent = wrist || target.grip;
+  if (menu.mesh.parent !== parent) parent.add(menu.mesh);
 }
 
 renderer.xr.addEventListener('sessionstart', () => {
@@ -2503,7 +2714,11 @@ renderer.xr.addEventListener('sessionstart', () => {
   perf.slow = 0; perf.ema = 0; perf.cool = 2; // the first seconds (controller models loading) don't count
   refreshLevel();
 });
-renderer.xr.addEventListener('sessionend', () => { label.setWidth(0.26); grabbers.clear(); S.vrNote = ''; refreshLevel(); resetView(); });
+renderer.xr.addEventListener('sessionend', () => {
+  label.setWidth(0.26); grabbers.clear(); S.vrNote = ''; refreshLevel(); resetView();
+  if (voice.rec.recording || voice.busy) finishVoice(); // the clip is kept if long enough
+  if (voice.resume) stopVoice();
+});
 
 // ---------------------------------------------------------------------------
 // Detail levels: keep VR smooth on big systems. They only change how things are drawn, never
@@ -2548,6 +2763,8 @@ function setDetail(d) {
 function smoothNow() { return S.smooth && !(renderer.xr.isPresenting && S.level >= 1); }
 function vrNote(text) { S.vrNote = text; perf.noteUntil = performance.now() + 6000; }
 
+refreshLevel(); // a level chosen last time applies now (Auto stays High on the desktop)
+
 /** In auto mode, steps detail down when VR frames keep missing the headset's frame rate. */
 function watchFrameRate(raw) {
   if (S.vrNote && performance.now() > perf.noteUntil) S.vrNote = '';
@@ -2577,6 +2794,8 @@ renderer.setAnimationLoop((time, frame) => {
     if (xrFrames === 1) xrLog('first VR frame');
     else if (xrFrames === 90) { xrLog('running (90 frames)', { ok: true }); $('xrNote')?.remove(); }
     if (S.needPlace && placeInFrontOfHead(frame)) { S.needPlace = false; if (xrFrames < 90) xrLog('placed'); }
+    if (xrFrames % 30 === 0) placeWristPanel(); // hand joints appear after 'connected'
+    updateHands();
     pollGamepads(dt);
     updateGrab();
     menu.faceHead();
@@ -2589,7 +2808,7 @@ renderer.setAnimationLoop((time, frame) => {
       const nf = S.traj.frames.length;
       const before = Math.floor(S.frameF);
       S.frameF += dt * S.fps;
-      if (S.frameF > nf - 1) { S.frameF = 0; S.looped = true; }
+      if (S.frameF >= nf) { S.frameF = 0; S.looped = true; } // the last frame gets its turn too
       // Without in-between frames, only a new data frame needs new geometry.
       if (smoothNow() || Math.floor(S.frameF) !== before) S.dirty = true;
     }
@@ -2629,6 +2848,7 @@ async function loadFromParams() {
       const r = await fetch(params.get('lesson'));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       applyLesson(parseLesson(await r.text()), decodeURIComponent(params.get('lesson').split('/').pop()));
+      source.lesson = params.get('lesson');
     } catch (err) { setStatus(`Could not open the lesson file in this link (${err.message}).`); }
   };
   if (params.has('sample')) { await loadSample(); applyViewParams(); await lessonFromLink(); return; }
@@ -2637,7 +2857,7 @@ async function loadFromParams() {
   try {
     setStatus(`Downloading ${urls.join(', ')}…`);
     const files = await Promise.all(urls.map(async (u) => {
-      const r = await fetch(u);
+      const r = await fetch(u.replace(/#/g, '%23')); // a '#' in a file name is not a fragment
       if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`);
       const name = decodeURIComponent(new URL(u, location.href).pathname.split('/').pop()) || 'trajectory';
       return new File([await r.blob()], name);
@@ -2653,7 +2873,7 @@ loadFromParams();
 
 // For debugging in the console.
 window.viewer = {
-  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice,
+  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice, measurementText, root,
   /** Screen position (CSS px) of atom i, for automated tests. */
   screenOf(i) {
     const v = new THREE.Vector3().fromArray(S.cur, 3 * i);

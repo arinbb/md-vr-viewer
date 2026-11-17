@@ -116,6 +116,7 @@ src/
   props.js             extra dump columns: vectors, color ranges, colormaps (DOM-free)
   elements.js          element table: colors, radii, masses; color palettes (DOM-free)
   voice.js             voice clips: recorder, player; lesson files (file part DOM-free)
+  gestures.js          hand tracking: fist (grab) and fingertip poke from joints (DOM-free)
 tools/
   make_sample.py       synthetic test fixture generator
   make_icons.py        draws icons/icon-192.png and icon-512.png (Pillow)
@@ -298,7 +299,7 @@ In memory a stop with a clip has `stop.voice = { blob, mime, dur }`.
 | Settings | `saveSettings()` | Load/save display settings in `localStorage` |
 | Emulator | top-level `await import(iwer)` | Installs IWER when `?emulate` is present, **before** the VR button checks for XR support |
 | Offline app | `navigator.serviceWorker.register('./sw.js')`, `beforeinstallprompt` | Registers the service worker (not for `file:`, `?emulate` or `?nosw`); shows an *Install* button where the browser offers one |
-| VR start-up log | `xrLog`, `lastXRFroze`, `xrSafe` | Writes each Enter VR step to localStorage as it happens. If the last try never reached a running session (a frozen page), the next load says which step it reached and the next session asks only for `local-floor` (safe mode; `?xrsafe` forces it) |
+| VR start-up log | `xrLog`, `lastXRFroze`, `xrSafe` | Writes each Enter VR step to localStorage as it happens. If the last try never drew its first VR frame and didn't end or fail normally (a page frozen while starting), the next load says which step it reached and the next session asks only for `local-floor` and `hand-tracking` (safe mode; `?xrsafe` forces it). A session closed after it started drawing (tab closed, page reloaded) doesn't count. |
 | Scene | renderer, camera, `OrbitControls`, `root` / `model` groups | three.js setup (section 5.1) |
 | Loading | `classify`, `loadFiles`, `loadSample`, `setTrajectory`, `applyTopology`, `fitModel` | Files → trajectory → topology → meshes |
 | View | `resetView`, `placeInFrontOfHead`, `focusAtom`, `simTime` | Camera and system placement; simulated-time formatting |
@@ -322,17 +323,23 @@ In memory a stop with a clip has `stop.voice = { blob, mime, dur }`.
 A service worker plus `manifest.webmanifest` make the viewer an installable app that runs
 offline (the Quest 3 standalone setup in the README).
 
-- **Install:** caches the app shell (page, modules, manifest, icons, and the sample if the
-  host has it) and the pinned CDN files: three.js core, the addons `main.js` imports and
-  their dependencies (`GLTFLoader`, `BufferGeometryUtils`, `motion-controllers`), and the
-  WebXR input-profile files for Quest 3 Touch Plus controllers plus the generic fallback.
-  Each file is fetched separately with `Promise.allSettled`, so a host without the sample
-  still installs.
-- **Fetch:** app files are **network-first** with a 4 s limit and the cache as the fallback,
-  so a new upload is picked up the next time the app opens online. Version-pinned CDN URLs
-  are **cache-first**. Every page address (`?sample`, share links) is served the cached
-  page when offline. Other same-origin files (e.g. trajectories behind share links) go
-  straight to the network and are not cached; files opened from the device never touch it.
+- **Install:** downloads the app files (`APP`: page, modules, manifest, icons) as one set
+  (`downloadSet`; install fails and is retried next visit if any is missing), the optional
+  sample if the host has it, and the pinned CDN files: three.js core, the addons `main.js`
+  imports and their dependencies (`GLTFLoader`, `BufferGeometryUtils`, `motion-controllers`),
+  and the WebXR input-profile files for Quest 3 Touch Plus controllers plus the generic
+  fallback.
+- **Fetch:** app files are always served **from the cached set** (`fromSet`), so the page
+  and its modules can never come from two versions (a mix would break the imports). Every
+  page address (`?sample`, share links) is the cached page. Version-pinned CDN URLs are
+  cache-first. Other same-origin files (e.g. trajectories behind share links) go straight to
+  the network and are not cached; files opened from the device never touch it.
+- **Updates:** each navigation starts `updateSet()` (at most once a minute): it re-downloads
+  the whole set with `cache: 'no-cache'` (ETag revalidation, cheap when unchanged) and only
+  if every app file arrived writes them all into the cache. If the page or a main module
+  changed, it posts `md-vr-updated` and the page shows *A new version … Reload*
+  (`#updateNote`). So an upload reaches users on the launch after the next online one, or
+  at once with Reload.
 - **Versions:** `VERSION` names the cache; bump it when the file list changes, and old
   caches are deleted on activation.
 - `tools/build_site.py` copies exactly the shell files into `dist/` for uploading, and
@@ -688,7 +695,7 @@ stateDiagram-v2
 | **Wrist menu** (`menu`) | An 800×980 canvas on a 20×24.5 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch (narrowed in AR sessions to fit the *room: on/off* passthrough toggle, `MODES_AR`), a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`), and the voice row in both modes (`VOICE_ROW`: hold to talk, hear stop, delete stop (two presses), wait for voice; recording and deleting are off in student mode). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
 | **Ray priority** | `updateHover` raycasts the menu first (three.js `Raycaster` against one plane), then atoms. While a ray is on the menu, the trigger never picks atoms behind it. Holding the trigger on the timeline scrubs. |
 | **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). A/X toggles play; B on the right hand steps one frame forward and Y on the left one back, repeating every 0.125 s after a 0.4 s hold (`h.stepHold`). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
-| **Hand tracking** | Requested as an optional feature. A pinch fires `select`/`squeeze` like a controller, and the laser is hidden for hands. |
+| **Hand tracking** | Requested as an optional feature (also in safe mode). Each hand gets a skinned model (`XRHandModelFactory`, `'mesh'` profile from the WebXR input-profiles CDN; hidden in AR passthrough) and a dimmer pointing ray. A pinch fires `select` like a trigger: on the menu it presses at once (with `uiClick()`, a short WebAudio click, since hands have no haptics); on atoms the pick waits for `selectend` and is dropped if a fist formed meanwhile (`pendingPick`, `fistDuringPinch`), so grabbing doesn't clear the selection. **Grab** comes from `updateHands()` each frame: `gestures.updateFist` compares each finger's tip-to-knuckle distance with its length along the bones (≈1 straight, ≈0.45 curled; closes when 3 of 4 fingers are below 0.6, opens when 3 are above 0.8), so it works for any hand size and doesn't flicker. A fist adds the hand to `grabbers` like a grip button; the browser's own `squeeze` is ignored for hands. Grabs follow `anchorOf(h)`, the **wrist joint** for hands (steadier than the hand's target ray). **Poke:** the other hand's index-finger tip is moved into the menu's local frame; `gestures.pokePanel` presses when it crosses the surface from the front (z ≤ 8 mm, previously above), hovers within 4 cm, and releases when pulled back past 2 cm or off the panel; hold-to-talk and timeline scrubbing work by poke too. The menu rides on the left **wrist joint** for hands (`placeWristPanel`, re-checked every 30 frames because joints appear after `connected`). `fistOverride` on a hand lets automated tests stand in for a fist. |
 | **Emulation** | With `?emulate`, IWER replaces `navigator.xr`. Tests then drive `xrDevice.controllers.right.position / quaternion / updateButtonValue / updateAxes`, exactly like a real Quest. |
 
 ---
@@ -728,6 +735,7 @@ sequenceDiagram
 | Parsers, topology, geometry | `tools/test_parser.mjs`: Node + `assert` on the synthetic fixture (`tools/fixtures/`) and hand-built edge cases. Covers frame/ID ordering, image-flag unwrapping, scaled and triclinic coordinates, XYZ, stride, streaming, the memory-guard stride, truncated files, groups and water detection, repairing 1,566 split bonds, continuous paths, triclinic minimum image, measurements, periodic and triclinic bond inference, and 30k-atom bond-inference speed. | `node tools/test_parser.mjs` |
 | Desktop UI | Browser checks through `window.viewer` (`screenOf(i)` converts an atom to screen pixels for real clicks) | manual / scripted |
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
+| Hand tracking | Node (`tools/test_features.mjs`): synthetic hands for open, fist, half-curled (no flicker), pinch (not a fist), small and large hands, untracked joints; poke press/hover/release, no press from behind, release off the edge. Emulator (IWER in hand mode): hand models load, rays show, menu on the left wrist joint, fingertip poke on *H-bonds* and *play* (press and toggle back), one-fist grab moves the system exactly with the wrist, two fists scale by the hands' spread ratio, AR passthrough hides the hand models. IWER has no fist pose (tests use `fistOverride`) and doesn't apply pinch values, so pinch→select was driven by dispatching `selectstart`/`selectend` | `node tools/test_features.mjs`; scripted |
 | Voice lessons | Node: lesson-file round trip with audio bytes, sorting, metadata, the plain-array tour format, share-link stripping, file sniffing. Browser (real `MediaRecorder`, a 440 Hz tone standing in for the mic): desktop record, re-take keeps the caption, too-short rejected, save → reload → open restores the clip byte-for-byte and it decodes as audio, unsaved-clip warning; emulator VR: hold-to-talk, hear, two-press delete, wait toggle | `node tools/test_features.mjs`; manual / scripted |
 | VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel; after the UI update: the Explore/Lesson switch both ways, next stop, atoms +, water, play/pause, all by aiming the controller and pulling the trigger), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
 | Lessons and links | Browser checks: stops pause playback at the right frame, a copied share link restores mapping, settings and stops in student mode | manual / scripted |

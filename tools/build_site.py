@@ -14,7 +14,7 @@ import shutil
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 FILES = ['index.html', 'manifest.webmanifest', 'sw.js', 'icons/icon-192.png', 'icons/icon-512.png',
          'src/main.js', 'src/parse-worker.js', 'src/lammps.js', 'src/model.js', 'src/analysis.js',
-         'src/chem.js', 'src/props.js', 'src/elements.js', 'src/voice.js']
+         'src/chem.js', 'src/props.js', 'src/elements.js', 'src/voice.js', 'src/gestures.js']
 SAMPLE = ['samples/sample.lesson.json', 'samples/caffeine_water.lammpstrj.gz']
 
 ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])

@@ -59,7 +59,7 @@ WebXR only runs on `https://` pages or `localhost`.
   **If the page freezes** ("This page isn't responding") after *Enter VR*: close the tab,
   open the page again and look under the status line. It says which start-up step the frozen
   try reached (the steps are saved as they happen), and the next *Enter VR* starts in **safe
-  mode**, asking only for `local-floor` (no layers, hand tracking or bounded floor). Add
+  mode**, asking only for `local-floor` and hand tracking (no layers or bounded floor). Add
   `?xrsafe` to the address to force safe mode. If the official WebXR samples
   (immersive-web.github.io/webxr-samples) freeze too, the problem is the browser and runtime
   combination, not the viewer: try Edge, or SteamVR as the OpenXR runtime.
@@ -114,9 +114,11 @@ OneDrive, Dropbox or email), then in the app use **Open files…** and pick them
 the download renamed them), LAMMPS data files and `dump xyz`. The Quest budget is about
 0.8 GB of coordinates; bigger runs load every Nth frame automatically and say so.
 
-**Updating the app:** rebuild `dist/`, upload it again, and open the app once while online;
-it picks up the new version (app files are fetched network-first, with the cache as the
-offline fallback). If you change which files the app needs, bump `VERSION` in `sw.js`.
+**Updating the app:** rebuild `dist/` and upload it again. The app always starts from its
+complete offline copy (so it never runs a mix of old and new files). When it is opened online
+it downloads the new version in the background and shows *A new version of the viewer is
+ready. Reload*; the next start uses it. If you change which files the app needs, bump
+`VERSION` in `sw.js`.
 
 **No headset?** Open `http://localhost:8137/?sample&emulate`. This loads Meta's WebXR emulator
 (IWER) into the page, so *Enter VR* works in any desktop browser with a simulated Quest 3.
@@ -165,7 +167,10 @@ dump_modify 1 sort id element C H O N   # element names per type, if you use the
 
 **Elements** are picked in this order: the "Map numeric types" box (e.g. `1:C 2:H 3:O`)
 > the dump's `element` column > data-file type labels > data-file masses > a type name
-that looks like an element. If types are still unknown (a bare dump with numbered types),
+that looks like an element. Type labels and names are read as force-field atom types:
+AMBER/GAFF `CA`/`ca` is carbon and `NA` nitrogen, while `Ca`, `Na+`, `Cl-` and CHARMM ion
+names (`SOD`, `POT`, `CLA`) are the ions. United-atom masses (CH, CH2, CH3, CH4) count as
+carbon. If types are still unknown (a bare dump with numbered types),
 the viewer **guesses them from bond geometry**: hydrogens from short X–H contacts, O/N/C
 from their X–H lengths, coordination and bond lengths, and C vs N in rings by checking
 which choice gives every sp2 atom a double-bond partner. Guesses are marked *guessed* in the
@@ -337,7 +342,17 @@ Any stop can carry a **voice clip**, so you can build a narrated lesson without 
     ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop in Lesson mode
     (cycles the water display in Explore). On trackpad controllers (Vive wands) the pad
     acts as the stick while touched, and pressing it re-centers.
-  - Hand tracking: pinch to pick, pinch-grab to move.
+  - **Hand tracking** (put the controllers down on a Quest):
+    - Your hands are drawn (hidden in AR passthrough, where you see your real ones), each
+      with a pointing ray.
+    - **Pinch** to pick an atom or press the wrist-menu button the ray points at; the pick
+      happens when you let go.
+    - **Make a fist** to grab and move the system; **two fists** scale and rotate it, like
+      the grip buttons.
+    - Or **poke** a wrist-menu button with your index fingertip (the menu sits on your left
+      wrist). A click sound confirms presses, since hands have no vibration.
+    - The A/B/X/Y and stick shortcuts have no hand equivalent: use the menu for play, stepping
+      and lesson stops.
 
 ## Layout
 
@@ -357,6 +372,7 @@ src/chem.js           element guessing, solvation-shell masks, hydrogen bonds
 src/props.js          extra dump columns: vector detection, color ranges, colormaps
 src/elements.js       element colors / radii / masses
 src/voice.js          voice clips: recorder, player, lesson files (.lesson.json)
+src/gestures.js       hand tracking: fist and fingertip-poke detection from hand joints
 src/parse-worker.js   streams (and gunzips) files off the main thread (memory guard)
 samples/caffeine_water.lammpstrj.gz  the sample: caffeine in water, real student NPT run
 samples/sample.lesson.json  the sample's guided tour (lesson stops, same format as share links)

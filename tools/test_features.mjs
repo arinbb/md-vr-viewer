@@ -9,6 +9,8 @@ import { nearMask, hbondParticipants, findHBonds, guessElements } from '../src/c
 import { vectorFamilies, propRange, propValues, colormap, propLabel } from '../src/props.js';
 import { lessonToJSON, parseLesson, looksLikeLesson, stripVoice, bytesToB64, b64ToBytes, fmtDur } from '../src/voice.js';
 import { readFileSync } from 'node:fs';
+import { normalizeElement, elementFromMass } from '../src/elements.js';
+import { parseDataFile } from '../src/lammps.js';
 
 // A small periodic box: one water dimer with a linear H-bond, plus a distant third water.
 // Water A: O at origin-ish, H pointing at water B's O. Water B: 2.9 Å away along x.
@@ -201,4 +203,105 @@ console.log('extra column tests passed');
   assert.throws(() => parseLesson('{"format":"md-vr-lesson"}'), /no stops/);
   assert.equal(fmtDur(65.4), '1:05');
   console.log('lesson file tests passed');
+}
+
+// ---- Regressions from the bug sweep
+{
+  // Force-field atom types are not elements: AMBER/GAFF CA, NA; CHARMM ion names; charged names.
+  const ff = (x) => normalizeElement(x, { forceField: true });
+  assert.equal(ff('CA'), 'C'); assert.equal(ff('ca'), 'C'); assert.equal(ff('NA'), 'N'); assert.equal(ff('na'), 'N');
+  assert.equal(ff('CL'), 'C'); assert.equal(ff('OW'), 'O'); assert.equal(ff('HW'), 'H');
+  assert.equal(ff('Ca'), 'Ca'); assert.equal(ff('Na'), 'Na'); assert.equal(ff('Cl'), 'Cl');
+  assert.equal(ff('NA+'), 'Na'); assert.equal(ff('Cl-'), 'Cl'); assert.equal(ff('Ca2+'), 'Ca');
+  assert.equal(ff('SOD'), 'Na'); assert.equal(ff('CLA'), 'Cl'); assert.equal(ff('POT'), 'K'); assert.equal(ff('MG'), 'Mg');
+  // A typed map or an element column means the element itself.
+  assert.equal(normalizeElement('CL'), 'Cl'); assert.equal(normalizeElement('na'), 'Na'); assert.equal(normalizeElement('OW'), 'O');
+
+  // United-atom groups are carbon; real N and O masses stay N and O.
+  assert.equal(elementFromMass(14.027), 'C'); assert.equal(elementFromMass(16.043), 'C'); assert.equal(elementFromMass(15.035), 'C');
+  assert.equal(elementFromMass(14.007), 'N'); assert.equal(elementFromMass(14.01), 'N'); assert.equal(elementFromMass(15.999), 'O');
+
+  // Data-file atom styles: sphere, and charge without a style hint.
+  const df = (style, row) => parseDataFile(`t\n\n1 atoms\n\nAtoms${style ? ' # ' + style : ''}\n\n${row}\n`).atoms.get(1);
+  assert.deepEqual([df('sphere', '1 1 1.5 1.0 0 0 0').type, df('sphere', '1 1 1.5 1.0 0 0 0').mol], ['1', null]);
+  assert.deepEqual([df('', '1 2 -0.8 0 0 0').type, df('', '1 2 -0.8 0 0 0').mol], ['2', null]);
+  assert.deepEqual([df('', '1 7 2 0 0 0').type, df('', '1 7 2 0 0 0').mol], ['2', 7]); // molecular
+
+  // A NaN coordinate must not knock a real neighbor out of the cell list.
+  const P = new Float32Array([0, 0, 0, NaN, 0, 0, 5, 5, 5, 0.5, 0, 0, 9, 9, 9]);
+  const near = nearMask(P, [0, 2], [1, 3, 4], 1, 5);
+  assert.equal(near[3], 1, 'atom 0.5 Å from a reference is near despite a NaN atom');
+  assert.equal(near[1], 0);
+
+  // XYZ: a frame with fewer atoms keeps the missing atom's last position.
+  const t = parseTrajectory('3\nf0\nO 1 1 1\nH 2 2 2\nH 3 3 3\n2\nf1\nO 1.1 1 1\nH 2.1 2 2\n');
+  assert.deepEqual([...t.frames[1].pos.slice(6, 9)], [3, 3, 3]);
+
+  // General triclinic boxes are refused with a clear message instead of a garbled box.
+  assert.throws(() => parseTrajectory('ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n1\nITEM: BOX BOUNDS abc origin pp pp pp\n10 0 0 0\n2 10 0 0\n0 0 10 0\nITEM: ATOMS id type x y z\n1 1 0 0 0\n'), /general triclinic/);
+
+  assert.equal(fmtDur(59.6), '1:00');
+  console.log('bug sweep regression tests passed');
+}
+
+// ---- Hand gestures (src/gestures.js)
+{
+  const { fingerStraightness, updateFist, pokePanel } = await import('../src/gestures.js');
+  // A synthetic hand: each finger's knuckle at x = k * 2 cm; bones 4, 2.5, 2 cm long. bend (rad)
+  // per joint curls the finger toward the palm (-y); 0 = straight.
+  const FINGERS = ['index-finger', 'middle-finger', 'ring-finger', 'pinky-finger'];
+  const handJoints = (bends, scale = 1) => {
+    const J = { wrist: { x: 0, y: 0, z: 0.05 * scale } };
+    FINGERS.forEach((f, k) => {
+      let p = { x: 0.02 * k * scale, y: 0, z: -0.04 * scale }, a = 0;
+      const names = ['phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip'];
+      const bones = [0.04, 0.025, 0.02].map((b) => b * scale * (k === 3 ? 0.8 : 1));
+      J[`${f}-${names[0]}`] = p;
+      bones.forEach((len, b) => {
+        a += bends[k];
+        p = { x: p.x, y: p.y - len * Math.sin(a), z: p.z - len * Math.cos(a) };
+        J[`${f}-${names[b + 1]}`] = p;
+      });
+    });
+    return (n) => J[n] || null;
+  };
+  const open = handJoints([0, 0, 0, 0]), fist = handJoints([1.45, 1.45, 1.45, 1.45]);
+  assert.ok(fingerStraightness(open).every((r) => r > 0.99), 'straight fingers ≈ 1');
+  assert.ok(fingerStraightness(fist).every((r) => r < 0.6), 'curled fingers well below 1');
+  const st = {};
+  assert.equal(updateFist(st, open), false); assert.equal(st.fist, false);
+  assert.equal(updateFist(st, fist), true); assert.equal(st.fist, true, 'a fist closes');
+  // Half-curled: neither opens nor closes (hysteresis), so the grab doesn't flicker.
+  const half = handJoints([1.0, 1.0, 1.0, 1.0]);
+  const hr = fingerStraightness(half);
+  assert.ok(hr.every((r) => r > 0.6 && r < 0.8), `half-curled ratios ${hr.map((x) => x.toFixed(2))}`);
+  assert.equal(updateFist(st, half), false); assert.equal(st.fist, true, 'stays closed in between');
+  assert.equal(updateFist(st, open), true); assert.equal(st.fist, false, 'opens when straight');
+  assert.equal(updateFist({}, half), false, 'half-curled does not close an open hand');
+  // A pinch (index curled toward the thumb, other fingers straight) is not a fist.
+  const pinch = {}; updateFist(pinch, handJoints([1.2, 0.1, 0.1, 0.1]));
+  assert.ok(!pinch.fist, 'pinch is not a fist');
+  // Small and large hands behave the same.
+  const big = {}; updateFist(big, handJoints([1.45, 1.45, 1.45, 1.45], 1.3)); assert.ok(big.fist);
+  const small = {}; updateFist(small, handJoints([1.45, 1.45, 1.45, 1.45], 0.75)); assert.ok(small.fist);
+  // Untracked joints: keep the state.
+  const keep = { fist: true }; assert.equal(updateFist(keep, () => null), false); assert.equal(keep.fist, true);
+
+  // Fingertip poke on a 20 x 24.5 cm panel.
+  const ps = {};
+  const at = (x, y, z) => pokePanel(ps, { x, y, z }, 0.2, 0.245);
+  assert.ok(!at(0, 0, 0.1).press && !at(0, 0, 0.1).hover, 'far away: nothing');
+  assert.ok(at(0, 0, 0.03).hover, 'close: hover');
+  const p = at(0.05, -0.1, 0.004);
+  assert.ok(p.press, 'crossing the surface presses');
+  assert.ok(Math.abs(p.uv.x - 0.75) < 1e-9 && Math.abs(p.uv.y - (-0.1 / 0.245 + 0.5)) < 1e-9, 'uv of the press point');
+  assert.ok(!at(0.05, -0.1, 0.0).press, 'one press per poke');
+  assert.ok(at(0.05, -0.1, 0.03).release, 'pulling back releases');
+  // Coming from behind the panel does not press.
+  const back = {}; pokePanel(back, { x: 0, y: 0, z: -0.02 }, 0.2, 0.245);
+  assert.ok(!pokePanel(back, { x: 0, y: 0, z: 0.0 }, 0.2, 0.245).press, 'no press from behind');
+  // Sliding off the edge releases.
+  const edge = {}; pokePanel(edge, { x: 0, y: 0, z: 0.03 }, 0.2, 0.245); pokePanel(edge, { x: 0, y: 0, z: 0.0 }, 0.2, 0.245);
+  assert.ok(pokePanel(edge, { x: 0.2, y: 0, z: 0.0 }, 0.2, 0.245).release, 'leaving the panel releases');
+  console.log('hand gesture tests passed');
 }

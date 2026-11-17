@@ -218,6 +218,12 @@ function writePos(pos, i, r, m, box) {
 function parseBox(item, l1, l2, l3) {
   // "BOX BOUNDS xy xz yz pp pp pp" (triclinic) or "BOX BOUNDS pp pp pp" or bare "BOX BOUNDS"
   const words = item.slice('BOX BOUNDS'.length).trim().split(WS).filter(Boolean);
+  if (words[0] === 'abc') {
+    // LAMMPS 2023+ "general triclinic" output (dump_modify triclinic/general yes): arbitrary
+    // box vectors, which this viewer's box model (LAMMPS's restricted triclinic) can't hold.
+    throw new Error('This dump uses a "general triclinic" box (BOX BOUNDS abc origin). Write it without ' +
+      'dump_modify triclinic/general (the default) and try again.');
+  }
   const triclinic = words[0] === 'xy';
   const flags = triclinic ? words.slice(3) : words;
   const periodic = [0, 1, 2].map((d) => (flags[d] ? flags[d].startsWith('p') : true));
@@ -312,7 +318,9 @@ class XYZParser {
           traj.elements = new Array(this.nat).fill(null);
           traj.warnings.push('XYZ format has no atom-IDs or box: assuming constant atom order, no periodic box.');
         }
-        this.pos = new Float32Array(3 * traj.n);
+        // Atoms missing from a shorter frame keep their previous position (as for dumps).
+        const prev = traj.frames.length ? traj.frames[traj.frames.length - 1].pos : null;
+        this.pos = prev ? new Float32Array(prev) : new Float32Array(3 * traj.n);
       }
       this.row = 0;
       this.state = this.nat > 0 ? 'atoms' : 'count';
@@ -358,6 +366,13 @@ const ATOM_STYLE_COLUMNS = {
   angle: [0, 1, 2, 3],
   molecular: [0, 1, 2, 3],
   full: [0, 1, 2, 4],
+  sphere: [0, -1, 1, 4],     // id type diameter density x y z
+  dipole: [0, -1, 1, 3],     // id type q x y z mux muy muz
+  ellipsoid: [0, -1, 1, 4],  // id type ellipsoidflag density x y z
+  body: [0, -1, 1, 4],       // id type bodyflag mass x y z
+  line: [0, 1, 2, 5],        // id mol type lineflag density x y z
+  tri: [0, 1, 2, 5],         // id mol type triangleflag density x y z
+  peri: [0, -1, 1, 4],       // id type volume density x y z
 };
 
 const SECTION_NAMES = new Set([
@@ -413,6 +428,8 @@ export function parseDataFile(text) {
 function guessAtomColumns(t) {
   // Without a style hint: 7 or 10 columns usually means "full" (id mol type q x y z [ix iy iz]).
   if (t.length >= 10 || t.length === 7) return ATOM_STYLE_COLUMNS.full;
-  if (t.length === 6 || t.length === 9) return ATOM_STYLE_COLUMNS.molecular;
+  // 6 or 9 columns: "molecular" (id mol type x y z) or "charge" (id type q x y z). A charge
+  // with a decimal point or exponent in column 3 means "charge"; mol and type are integers.
+  if (t.length === 6 || t.length === 9) return /^-?\d+$/.test(t[2]) ? ATOM_STYLE_COLUMNS.molecular : ATOM_STYLE_COLUMNS.charge;
   return ATOM_STYLE_COLUMNS.atomic;
 }

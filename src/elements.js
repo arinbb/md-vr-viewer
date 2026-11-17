@@ -28,16 +28,38 @@ export const ELEMENTS = {
   X:  { color: 0xff1493, cov: 0.75, vdw: 1.50, mass: 0 },
 };
 
-/** Normalize "c", "CA"(ambiguous) etc. Returns a key of ELEMENTS or null. */
-export function normalizeElement(s) {
+// Ion residue/atom names used by CHARMM and others that don't start with their element symbol.
+const ION_NAMES = { SOD: 'Na', POT: 'K', CLA: 'Cl', CAL: 'Ca', CES: 'Cs', LIT: 'Li', RUB: 'Rb', ZN2: 'Zn', MG2: 'Mg' };
+
+/**
+ * Element symbol for a name. Returns a key of ELEMENTS or null.
+ *
+ * Plain mode (an element column, or a map the user typed): the name is read as an element
+ * symbol in any case ("c", "CL" → Cl), else by its first letter ("OW" → O).
+ *
+ * Force-field mode ({ forceField: true }, for data-file type labels and type names): all-caps
+ * or all-lowercase names are atom types, read by their first letter, so AMBER/GAFF "CA"/"ca"
+ * (aromatic carbon) is C and "NA"/"na" is N, not calcium or sodium. A symbol in its proper case
+ * ("Ca", "Na", "Cl"), a charged name ("NA+", "Cl-", "Ca2+") or a known ion name ("SOD", "CLA")
+ * is the element.
+ */
+export function normalizeElement(s, { forceField = false } = {}) {
   if (s == null) return null;
   s = String(s).trim();
-  if (!s) return null;
-  const cap = s[0].toUpperCase() + s.slice(1).toLowerCase();
-  if (ELEMENTS[cap]) return cap;
-  // Force-field type names like "CT", "OW", "HW", "C1": take first letter if it is an element.
+  if (!s || !/[A-Za-z]/.test(s[0])) return null;
+  const cap = (x) => x[0].toUpperCase() + x.slice(1).toLowerCase();
   const first = s[0].toUpperCase();
-  if (/[A-Za-z]/.test(s[0]) && ELEMENTS[first]) return first;
+  if (forceField) {
+    const ion = /^([A-Za-z]{1,2})\d*[+-]+$/.exec(s);
+    if (ion && ELEMENTS[cap(ion[1])]) return cap(ion[1]);
+    if (ION_NAMES[s.toUpperCase()]) return ION_NAMES[s.toUpperCase()];
+    if (/^[A-Z][a-z]$/.test(s) && ELEMENTS[s]) return s; // proper-case symbol
+    if (ELEMENTS[first]) return first;                    // atom type: first letter
+    return ELEMENTS[cap(s)] ? cap(s) : null;               // e.g. "MG" (no element "M")
+  }
+  if (ELEMENTS[cap(s)]) return cap(s);
+  // Force-field type names like "CT", "OW", "HW", "C1": take first letter if it is an element.
+  if (ELEMENTS[first]) return first;
   return null;
 }
 
@@ -49,8 +71,10 @@ export function elementFromMass(m) {
     const d = Math.abs(e.mass - m);
     if (d < bestDiff) { bestDiff = d; best = sym; }
   }
-  // United-atom CH2/CH3 groups (14.03, 15.03) land near N; accept only close matches,
-  // and treat 13–16 amu united atoms as carbon.
+  // United-atom CH, CH2, CH3, CH4 (13.02, 14.03, 15.03, 16.04 amu) sit right next to N (14.007)
+  // and O (15.999): a mass closer to one of them than to the nearest element is carbon.
+  const ua = Math.min(...[13.019, 14.027, 15.035, 16.043].map((u) => Math.abs(u - m)));
+  if (ua < bestDiff && ua <= 0.05) return 'C';
   if (bestDiff <= 0.6) return best;
   if (m > 12.5 && m < 16.2) return 'C';
   return null;

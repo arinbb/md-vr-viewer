@@ -31,6 +31,9 @@ function makeDelta(box) {
   return (dx, dy, dz, out) => minImage(box, dx, dy, dz, out);
 }
 
+/** Clamp a cell index to [0, n-1]; NaN (from a NaN coordinate) goes to 0. */
+const clampCell = (k, n) => (k >= 0 ? (k < n ? k : n - 1) : 0);
+
 function buildGrid(pos, idx, cell, box = null) {
   const periodic = !!box && box.periodic.some(Boolean);
   const cellOf = new Int32Array(idx.length);
@@ -53,7 +56,7 @@ function buildGrid(pos, idx, cell, box = null) {
         let u = box.periodic[d] ? f[d] - Math.floor(f[d]) : f[d];
         let k = Math.floor(u * n[d]);
         if (k >= n[d]) k = n[d] - 1;
-        if (k < 0) k = 0; // non-periodic dims: atoms outside the box share the edge cells
+        if (!(k >= 0)) k = 0; // non-periodic dims: atoms outside the box share the edge cells (NaN too)
         out[d] = k;
       }
       return out;
@@ -71,9 +74,9 @@ function buildGrid(pos, idx, cell, box = null) {
     while (((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) * ((z1 - z0) / cell + 1) > MAX_CELLS) cell *= 1.5;
     const nx = Math.floor((x1 - x0) / cell) + 1, ny = Math.floor((y1 - y0) / cell) + 1, nz = Math.floor((z1 - z0) / cell) + 1;
     const cellIndex = (x, y, z, out) => {
-      out[0] = Math.min(Math.max(Math.floor((x - x0) / cell), 0), nx - 1);
-      out[1] = Math.min(Math.max(Math.floor((y - y0) / cell), 0), ny - 1);
-      out[2] = Math.min(Math.max(Math.floor((z - z0) / cell), 0), nz - 1);
+      out[0] = clampCell(Math.floor((x - x0) / cell), nx);
+      out[1] = clampCell(Math.floor((y - y0) / cell), ny);
+      out[2] = clampCell(Math.floor((z - z0) / cell), nz);
       return out;
     };
     g = { periodic: false, nx, ny, nz, wrap: [false, false, false], cellIndex };
@@ -343,7 +346,10 @@ export function guessElements(traj, known = {}) {
     if (typeIsH.get(t)) continue;
     const nHs = atoms.map((i) => hOf(i).length), ks = atoms.map((i) => heavyOf(i).length);
     const [nH, nHc] = mode(nHs), [k, kc] = mode(ks);
-    const same = atoms.filter((_, a) => nHs[a] === nH && ks[a] === k);
+    // Atoms with the type's usual H count and neighbor count. If no atom has both (mixed
+    // environments), use those with the usual neighbor count, so the features stay defined.
+    let same = atoms.filter((_, a) => nHs[a] === nH && ks[a] === k);
+    if (!same.length) same = atoms.filter((_, a) => ks[a] === k);
     feat.set(t, {
       nH, k, agree: Math.min(nHc, kc) / atoms.length,
       dH: avg(same.flatMap((i) => hOf(i).map(([, r]) => r))),
@@ -400,7 +406,7 @@ export function guessElements(traj, known = {}) {
         [e, c] = ['C', 'low'];
       }
     } else if (k === 4) {
-      const terminal = f.heavy[0].filter(({ j }) => heavyOf(j).length === 1 && hOf(j).length === 0).length;
+      const terminal = (f.heavy[0] || []).filter(({ j }) => heavyOf(j).length === 1 && hOf(j).length === 0).length;
       [e, c] = terminal >= 3 && meanHeavy < 1.70 ? ['P', 'low'] : ['C', 'low'];
     } else { notes[t] = `${k} neighbors`; continue; }
     map[t] = e;

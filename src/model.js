@@ -3,6 +3,8 @@
 
 import { ELEMENTS, normalizeElement, elementFromMass } from './elements.js';
 
+const FF = { forceField: true }; // type labels and type names are force-field atom types
+
 /** "1:C 2:H 3=O, 4 N" -> { '1':'C', '2':'H', '3':'O', '4':'N' } */
 export function parseTypeMap(str) {
   const map = {};
@@ -24,9 +26,9 @@ export function resolveElements(traj, data, userMap = {}) {
   for (const t of uniqueTypes) {
     let el = null, src = null;
     if (userMap[t]) { el = userMap[t]; src = 'your mapping'; }
-    else if (data && data.typeLabels[t] && normalizeElement(data.typeLabels[t])) { el = normalizeElement(data.typeLabels[t]); src = 'data file label'; }
+    else if (data && data.typeLabels[t] && normalizeElement(data.typeLabels[t], FF)) { el = normalizeElement(data.typeLabels[t], FF); src = 'data file label'; }
     else if (data && data.masses[t] != null && elementFromMass(data.masses[t])) { el = elementFromMass(data.masses[t]); src = `mass ${data.masses[t]}`; }
-    else if (!/^\d+$/.test(t) && normalizeElement(t)) { el = normalizeElement(t); src = 'type name'; }
+    else if (!/^\d+$/.test(t) && normalizeElement(t, FF)) { el = normalizeElement(t, FF); src = 'type name'; }
     typeToEl[t] = el;
     sources[t] = src;
   }
@@ -77,6 +79,12 @@ export function bondsFromData(traj, data) {
  * found too (atoms near a periodic face get ghost images). If `mols` is given, only atoms in
  * the same molecule are bonded.
  */
+/** Cell index along one axis, clamped to [0, n-1]; NaN goes to 0. */
+function cellCoord(v, lo, cell, n) {
+  const k = Math.floor((v - lo) / cell);
+  return k >= 0 ? (k < n ? k : n - 1) : 0;
+}
+
 export function inferBonds(pos, elements, { tolerance = 1.2, mols = null, box = null, maxBonds = 2_000_000 } = {}) {
   const n = elements.length;
   if (!n) return new Int32Array(0);
@@ -108,9 +116,10 @@ export function inferBonds(pos, elements, { tolerance = 1.2, mols = null, box = 
   const cellStart = useMap ? null : new Int32Array(nCells + 1);
   const map = useMap ? new Map() : null;
   for (let i = 0; i < m; i++) {
-    const cx = Math.min(dim[0] - 1, Math.floor((P[3 * i] - min[0]) / cell));
-    const cy = Math.min(dim[1] - 1, Math.floor((P[3 * i + 1] - min[1]) / cell));
-    const cz = Math.min(dim[2] - 1, Math.floor((P[3 * i + 2] - min[2]) / cell));
+    // A NaN coordinate (e.g. "nan" in a dump) lands in cell 0 and never matches a distance test.
+    const cx = cellCoord(P[3 * i], min[0], cell, dim[0]);
+    const cy = cellCoord(P[3 * i + 1], min[1], cell, dim[1]);
+    const cz = cellCoord(P[3 * i + 2], min[2], cell, dim[2]);
     cellOf[3 * i] = cx; cellOf[3 * i + 1] = cy; cellOf[3 * i + 2] = cz;
     const k = cx + dim[0] * (cy + dim[1] * cz);
     keyOf[i] = k;

@@ -69,7 +69,7 @@ export function looksLikeLesson(head) {
   return (t.startsWith('{') && t.includes(LESSON_FORMAT)) || (t.startsWith('[') && /"f"\s*:/.test(t));
 }
 
-export const fmtDur = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+export const fmtDur = (s) => { const t = Math.round(s); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 
 // ---------------------------------------------------------------------------
 // Browser only: recorder and player.
@@ -79,7 +79,7 @@ export const fmtDur = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60))
  * for quick re-takes and is released after a minute of not recording); stop() resolves with
  * { blob, mime, dur }, or null for a clip shorter than 0.4 s.
  */
-export function createRecorder({ onTick } = {}) {
+export function createRecorder({ onTick, onAutoStop } = {}) {
   let stream = null, rec = null, chunks = [], t0 = 0, timer = 0, releaseTimer = 0, finish = null;
   const supported = typeof window !== 'undefined' && !!(navigator.mediaDevices && window.MediaRecorder);
   const mime = supported ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'].find((m) => MediaRecorder.isTypeSupported(m)) || '' : '';
@@ -111,7 +111,9 @@ export function createRecorder({ onTick } = {}) {
         clearInterval(timer);
         releaseTimer = setTimeout(release, 60000);
         const blob = new Blob(chunks, { type });
-        if (finish) finish(dur < 0.4 || !blob.size ? null : { blob, mime: type, dur });
+        const clip = dur < 0.4 || !blob.size ? null : { blob, mime: type, dur };
+        if (finish) finish(clip);
+        else if (onAutoStop) onAutoStop(clip); // the 3-minute limit stopped it
         finish = null;
       };
       t0 = performance.now();
@@ -130,7 +132,7 @@ export function createRecorder({ onTick } = {}) {
 }
 
 /** One clip at a time; onEnd(k) is called when clip k finishes on its own. */
-export function createPlayer({ onEnd } = {}) {
+export function createPlayer({ onEnd, onFail } = {}) {
   const audio = typeof Audio !== 'undefined' ? new Audio() : null;
   let url = '', current = -1;
   if (audio) audio.addEventListener('ended', () => { const k = current; current = -1; if (onEnd) onEnd(k); });
@@ -142,7 +144,10 @@ export function createPlayer({ onEnd } = {}) {
       url = URL.createObjectURL(voice.blob);
       audio.src = url;
       current = k;
-      audio.play().catch((e) => { console.warn('Voice clip could not play', e); current = -1; });
+      audio.play().catch((e) => {
+        console.warn('Voice clip could not play', e);
+        if (current === k) { current = -1; if (onFail) onFail(k, e); }
+      });
       return true;
     },
     stop() {

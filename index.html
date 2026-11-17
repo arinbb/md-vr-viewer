@@ -82,6 +82,9 @@
   #stopList li { display: flex; gap: 6px; align-items: baseline; padding: 3px 4px; border-radius: 5px; cursor: pointer; }
   #stopList li:hover { background: var(--hover); }
   #stopList li.active { background: var(--accent-bg); }
+  #stopList .v { color: var(--accent); font-size: 12px; white-space: nowrap; cursor: pointer; padding: 0 4px; }
+  #stopList .v:hover { text-decoration: underline; }
+  #recVoice.rec { background: #a40e26; border-color: #f85149; color: #fff; }
   #stopList .f { color: var(--muted); font-size: 11px; min-width: 38px; flex-shrink: 0; }
   #stopList .t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   #stopList .x { margin-left: auto; color: var(--muted); padding: 0 4px; }
@@ -220,6 +223,14 @@
       <label>Atom size <input id="atomScale" type="range" min="0.3" max="2" step="0.05" value="1"></label>
       <label class="check"><input id="showBonds" type="checkbox" checked> Bonds <span id="bondInfo" class="muted small"></span></label>
       <label class="check"><input id="showBox" type="checkbox" checked> Simulation box</label>
+      <label title="Lower detail keeps big systems smooth in VR. It changes only how atoms are drawn, never the H-bond or shell results.">Detail
+        <select id="detail">
+          <option value="auto">Auto (lowers itself in VR if needed)</option>
+          <option value="high">High</option>
+          <option value="medium">Medium: simpler spheres</option>
+          <option value="low">Low: water as single beads</option>
+        </select>
+      </label>
     </div>
   </details>
 
@@ -271,6 +282,7 @@
     <div class="sec-body">
       <ul id="stopList"></ul>
       <label class="check small"><input id="pauseAtStops" type="checkbox" checked> Pause at each stop during playback</label>
+      <label class="check small"><input id="waitVoice" type="checkbox" checked> Wait for voice clips to finish, then carry on</label>
       <details class="sub adv" id="editStops">
         <summary>Edit stops and share</summary>
         <p class="hint">A stop ties a caption, the camera and the current settings to a frame.</p>
@@ -279,6 +291,16 @@
           <button id="addStop" title="Save the current frame, camera, selection and display settings with this caption">Add stop here</button>
           <button id="updateStop" title="Overwrite the highlighted stop with the current view and caption" disabled>Update stop</button>
         </div>
+        <p class="hint" style="margin-top:8px">Voice: go to a moment and record. The clip goes on the stop at that frame (or makes one).
+          In VR, hold <b>● hold to talk</b> on the wrist menu.</p>
+        <div class="row">
+          <button id="recVoice" title="Record a voice clip for this moment; click again to stop">● Record voice</button>
+          <button id="allowMic" title="Ask for the microphone now, e.g. before putting on the headset">Allow microphone</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="saveLesson" title="Save all stops with their voice clips as one .lesson.json file">Save lesson file</button>
+        </div>
+        <div id="voiceInfo" class="small muted"></div>
         <div class="row" style="margin-top:6px">
           <button id="copyLink" title="Copy a link that opens this file with these settings and stops">Copy share link</button>
           <label class="check small" style="margin:0"><input id="linkStudent" type="checkbox" checked> student mode</label>
@@ -324,7 +346,7 @@
         <span>wrist menu</span><span>on the left controller; point with the right. Explore / Lesson switch, like here</span>
         <span>grip</span><span>grab and move; both grips scale and rotate</span>
         <span>trigger</span><span>pick atoms (up to 4); on empty space clears</span>
-        <span>A/X · B/Y</span><span>play / pause · style</span>
+        <span>A/X · B · Y</span><span>play / pause · frame ▶ · frame ◀ (hold to repeat)</span>
         <span>right stick</span><span>←→ scrub, ↑↓ speed (Vive: trackpad)</span>
         <span>left stick</span><span>←→ coloring, ↑↓ next / previous stop</span>
         <span>stick click</span><span>reset view</span>

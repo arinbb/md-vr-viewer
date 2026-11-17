@@ -144,6 +144,7 @@ You don't have to write these by hand: set up the view, add lesson stops, and cl
 | `hb` | `off`, `solute`, `all` (hydrogen bonds) |
 | `arrows` | a vector column family: `v`, `f`, `mu`, or a compute name like `c_myforce` |
 | `stops` | lesson stops (written by *Copy share link*) |
+| `lesson` | address of a lesson file (`.lesson.json`, with voice clips) to load after the trajectory |
 | `student` | no value; hides loading, atom-type and expert controls |
 
 ## Supported input
@@ -193,6 +194,22 @@ Nth frame** yourself. Measured: a 47 MB, 24k-atom, 60-frame dump loads in 0.4 s 
 at 60 fps on desktop. Extra columns cost 4 bytes/atom/frame each and count toward the same
 budget. The water shell and H-bond searches run once per data frame (not per display
 frame), costing a few ms even with thousands of H-bonds.
+
+**Big systems in VR: the Detail setting** (*Appearance* panel, and the *detail* button on
+the wrist menu). A headset draws everything twice at 72–90 frames per second, so large
+systems can lag. Detail changes only how atoms are **drawn**; H-bond counts, the water shell
+and measurements are identical at every level.
+
+| Detail | What changes | Caffeine sample, all water |
+|---|---|---|
+| **High** | Full-quality spheres, smooth in-between frames | 2.6 M triangles |
+| **Medium** | Simpler spheres and bonds; in VR, playback moves atoms on whole data frames only | 1.3 M |
+| **Low** | Medium, plus each water molecule drawn as one red bead (caffeine keeps full detail) | 0.2 M |
+| **Auto** (default) | High on the desktop. In VR it starts from the number of shown atoms and the device (stricter on a standalone Quest), then lowers itself if frames keep arriving late, with a note on the wrist menu | |
+
+Hidden atoms cost nothing to draw: showing water *near solute* draws about 1,200 of the
+sample's 9,200 atoms. For very large systems in VR, combine *Low* with *Water: near solute*.
+Auto never raises the detail by itself during a session; use the menu's *detail* button.
 
 ## Teaching tools
 
@@ -269,6 +286,32 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
   atom-type and editing controls. If you opened a local file, put it next to `index.html` on
   the server under the same name.
 
+### Voice lessons (record in the headset)
+
+Any stop can carry a **voice clip**, so you can build a narrated lesson without typing.
+
+- **In VR:** go to a moment (play, pause, step with B/Y), set up what you want to show, then
+  point at **● hold to talk** on the wrist menu and **hold the trigger while you talk**.
+  The button turns red with a timer, and the controllers buzz at the start and end.
+  Letting go puts the clip on the stop at that frame, or makes a new stop with the frame,
+  view settings and selected atoms as they were when you started talking. Recording again at
+  the same frame replaces the clip and keeps the caption. **▶ hear stop** plays it back;
+  **✕ delete stop** removes the stop (press twice). Clips can be up to 3 minutes.
+- **On the desktop:** *Lesson → Edit stops and share → ● Record voice* (click again to stop).
+  In the stop list, ▶ 0:12 plays a clip.
+- **Microphone:** the browser asks once. If you plan to record in the headset, press
+  **Allow microphone** on the page before entering VR, because a permission prompt may not
+  show inside VR.
+- **Students** hear each clip when playback reaches its stop. With *Wait for voice clips*
+  on (default), playback pauses for the clip and carries on when it ends. ⏮ / ⏭ and the
+  stop list play the clip too. Stops with only a voice show *Voice note* as their caption.
+- **Saving and sharing:** clips live in the page until you click **Save lesson file**. It
+  downloads `<trajectory>.lesson.json` with every stop and clip inside (about 4 KB per
+  second of voice). The page warns before closing with unsaved clips. Students open the
+  lesson file **together with the trajectory** (*Open files…*, select both), or on its own
+  once the trajectory is open. Hosted: put it next to the data and add `&lesson=` with its
+  address to a share link. Share links themselves can't hold audio.
+
 ## Controls
 
 - **Desktop:** drag to rotate, scroll to zoom, right-drag to pan, click an atom to
@@ -289,7 +332,8 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
   - **Grip** to grab and move the system; **both grips** to scale and rotate it.
   - **Trigger** on atoms to pick them (up to 4 for measuring; trigger on empty space clears).
     The ray stops on whatever it is pointing at.
-  - Shortcuts: A/X play/pause, B/Y style, thumbstick click re-centers the view, right stick
+  - Shortcuts: A/X play/pause, **B** (right) one frame forward and **Y** (left) one frame back
+    (hold to keep stepping), thumbstick click re-centers the view, right stick
     ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop in Lesson mode
     (cycles the water display in Explore). On trackpad controllers (Vive wands) the pad
     acts as the stick while touched, and pressing it re-centers.
@@ -312,6 +356,7 @@ src/analysis.js       make-whole/wrap, measurements, atom paths, water detection
 src/chem.js           element guessing, solvation-shell masks, hydrogen bonds
 src/props.js          extra dump columns: vector detection, color ranges, colormaps
 src/elements.js       element colors / radii / masses
+src/voice.js          voice clips: recorder, player, lesson files (.lesson.json)
 src/parse-worker.js   streams (and gunzips) files off the main thread (memory guard)
 samples/caffeine_water.lammpstrj.gz  the sample: caffeine in water, real student NPT run
 samples/sample.lesson.json  the sample's guided tour (lesson stops, same format as share links)

@@ -115,6 +115,7 @@ src/
   chem.js              element guessing, solvation-shell masks, hydrogen bonds (DOM-free)
   props.js             extra dump columns: vectors, color ranges, colormaps (DOM-free)
   elements.js          element table: colors, radii, masses; color palettes (DOM-free)
+  voice.js             voice clips: recorder, player; lesson files (file part DOM-free)
 tools/
   make_sample.py       synthetic test fixture generator
   make_icons.py        draws icons/icon-192.png and icon-512.png (Pillow)
@@ -275,6 +276,18 @@ for force-field type names. `elementFromMass` matches masses within 0.6 amu and 
 13–16 amu united-atom CH*n* groups as carbon. `paletteColor(i)` gives distinct colors
 for types and molecules (a 12-color Tableau-style palette, then a golden-angle hue walk).
 
+### 3.8b `voice.js`: voice clips and lesson files
+
+| Export | Purpose |
+|---|---|
+| `createRecorder({ onTick })` | `MediaRecorder` on the microphone (Opus in WebM where supported, else MP4 or Ogg; 32 kbit/s; echo cancellation and noise suppression). `start()` asks for the mic the first time; the stream stays open for quick re-takes and is released after a minute idle. `stop()` resolves `{ blob, mime, dur }`, or `null` under 0.4 s. Clips stop at 3 minutes. `allow()` asks for the mic without recording. |
+| `createPlayer({ onEnd })` | One `Audio` element; `play(k, voice)` plays stop *k*'s clip from an object URL, `onEnd(k)` fires when it finishes by itself. |
+| `lessonToJSON(stops, meta)` | Lesson file text: `{ format: 'md-vr-lesson', version: 1, trajectory, map, fs, stops }`, each clip as `voice: { mime, dur, data: base64 }` (chunked `bytesToB64`). |
+| `parseLesson(text)` | Our format or a plain array of stops (like `samples/sample.lesson.json`); clips back to Blobs; returns `{ stops, meta, clips }`. |
+| `looksLikeLesson(head)`, `stripVoice(stops)`, `fmtDur(s)` | File sniffing in `classify`; share links without audio (`hasVoice: true` marks where a clip was); `m:ss`. |
+
+In memory a stop with a clip has `stop.voice = { blob, mime, dur }`.
+
 ### 3.9 `main.js`: the application
 
 `main.js` is organized in commented sections, in this order:
@@ -432,7 +445,25 @@ This only runs when something changed (`S.dirty`: playback, scrubbing or a style
 
 - **GPU instancing:** one draw call for all atoms, one for all bonds.
 - **Level of detail by system size:** sphere segments 24×16 (<5k atoms), 14×10 (<30k)
-  or 8×6 (more).
+  or 8×6 (more) at High detail.
+- **Draw lists** (`rebuildDrawLists`): only drawn atoms and bonds are packed to the front of
+  the instanced meshes (`S.drawAtoms`, `S.drawBonds`) and `mesh.count` is set to them, so
+  hidden water costs no GPU work. Colors are gathered through the same lists
+  (`applyColors`, `applyBondColors`). The lists are rebuilt when visibility changes (the
+  contact key) or `S.drawDirty` is set (new bonds, new meshes); picking walks the same list.
+- **Detail levels** (`S.detail` setting → `S.level` 0/1/2; `setDetail`, `refreshLevel`):
+  Medium uses 10×7 spheres and 6-sided bonds, skips in-between frames during VR playback
+  (`smoothNow()`; only a new data frame sets `S.dirty`) and picks atoms for hover every 2nd
+  frame. Low uses 7×5 spheres and 4-sided bonds, picks every 3rd frame, and draws each water
+  as one bead at its oxygen (`drawRadius`): water hydrogens and bonds are left out of the
+  draw lists only, so `S.visible`, the shell and H-bond searches are untouched. Changing level
+  rebuilds the meshes.
+- **Auto detail in VR** (`autoLevel`, `watchFrameRate`): at session start the level comes
+  from the number of visible atoms (standalone headsets by user agent: Medium above 6k, Low
+  above 20k; PC VR: 30k / 80k). Each XR frame feeds the raw frame interval into a moving
+  average; if it stays above 1.3 × the session's frame period (`XRSession.frameRate`,
+  default 72 Hz) for about 2 s, the level drops one step, the wrist menu shows a note
+  (`S.vrNote`), and judging pauses 3 s. It never raises the level by itself.
 - **`frustumCulled = false`** on instanced meshes. Their bounding volumes would be stale
   as atoms move, and the system is almost always in view anyway.
 - **Dirty flag:** a paused, unchanged scene doesn't rebuild geometry each frame.
@@ -440,6 +471,9 @@ This only runs when something changed (`S.dirty`: playback, scrubbing or a style
 - **Typed-array cell lists** (counting sort, no per-cell objects) for bond inference, the
   water shell and H-bonds, so they are cheap to rebuild per data frame.
 - **Contact caching** (step 4 above): shell and H-bond searches run once per data frame.
+- Triangles on the caffeine sample (all water): 2.56 M at High, 1.25 M at Medium, 0.18 M at
+  Low; with water near solute: 0.34 M / 0.17 M / 0.03 M. `updatePositions` with all water
+  drops from ~3.1 ms (High, smooth playback) to ~1.4 ms (Low).
 - Measured on an RTX 4070 Ti SUPER desktop: a 24k-atom system plays at 60 fps (vsync),
   and a 47 MB dump parses in 0.4 s. `updatePositions` costs ~3.5 ms at 24k atoms; with all
   8,160 water–water H-bonds on it costs ~8 ms on a new data frame and ~3.5 ms between
@@ -608,9 +642,30 @@ a refit or window resize. Stops are kept sorted by frame.
   applies it and optionally pauses. The caption shown is always the latest stop at or
   before the current frame.
 - `shareLink` writes the file URL(s), mapping, settings and `stops` (JSON →
-  UTF-8 → base64url, so captions in any language survive) into the query string.
-  `loadFromParams` reverses this; view settings are applied after the trajectory loads
-  because coloring and arrow choices depend on its columns.
+  UTF-8 → base64url, so captions in any language survive) into the query string, without
+  audio (`stripVoice`). `loadFromParams` reverses this; view settings are applied after the
+  trajectory loads because coloring and arrow choices depend on its columns. `lesson=`
+  loads a lesson file after the trajectory.
+
+**Voice clips** (`voice` object near the top of `main.js`; functions after `copyLink`):
+
+- **Recording:** `startVoice()` pauses playback, saves the moment with `captureStop('')`
+  (frame, view settings, selection; the camera too on the desktop) and starts the recorder.
+  `finishVoice()` attaches the clip to that moment: it replaces the stop at the same frame
+  (keeping its caption) or inserts a new one, switches to Lesson and marks
+  `voice.unsaved`. The wrist menu's *● hold to talk* starts on `selectstart`
+  (`menu.press`) and finishes on `selectend` (`menu.release`), wherever the ray is by
+  then. The desktop's *● Record voice* toggles. `buzz()` pulses the controllers'
+  haptic actuators at start and end.
+- **Playback:** `onFrameChange` plays a stop's clip when playback reaches it
+  (`playVoice(k, { wait })`: with *Wait for voice clips*, playback pauses and resumes in
+  the player's `onEnd`). `gotoStop`, the stop list and *▶ hear stop* play clips too;
+  leaving Lesson mode stops them (`stopVoice`).
+- **Files:** *Save lesson file* downloads `lessonToJSON(...)`. `classify` recognises lesson
+  files (`.json` or `looksLikeLesson`); `loadFiles` applies one after its trajectory
+  (`applyLesson`), or on its own to the current trajectory (`openLocal` then leaves the
+  current setup alone). A lesson's `map` fills an empty type map before parsing. A
+  `beforeunload` guard warns while clips are unsaved.
 
 ## 7. VR interaction layer
 
@@ -630,9 +685,9 @@ stateDiagram-v2
 | **Placement** | On session start, reads the `XRViewerPose` directly from the `XRFrame` (reliable on the first frame) and puts `root` 0.75 m in front of the head along the horizontal look direction, 15 cm below eye level, rotated to face the user. |
 | **Grab (one hand)** | On `squeezestart`, stores `offset = inverse(controller) × root`; each frame sets `root = controller × offset`. The system moves rigidly with the hand. |
 | **Grab (two hands)** | Stores the initial hand distance, the hand-to-hand direction and the root point under the midpoint. Each frame, scale = s₀·d/d₀, rotation = (quaternion turning the old hand-to-hand direction into the new one) × q₀, and the position keeps the same root point under the midpoint. |
-| **Wrist menu** (`menu`) | An 800×880 canvas on a 20×22 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch (narrowed in AR sessions to fit the *room: on/off* passthrough toggle, `MODES_AR`), and a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
+| **Wrist menu** (`menu`) | An 800×980 canvas on a 20×24.5 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch (narrowed in AR sessions to fit the *room: on/off* passthrough toggle, `MODES_AR`), a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`), and the voice row in both modes (`VOICE_ROW`: hold to talk, hear stop, delete stop (two presses), wait for voice; recording and deleting are off in student mode). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
 | **Ray priority** | `updateHover` raycasts the menu first (three.js `Raycaster` against one plane), then atoms. While a ray is on the menu, the trigger never picks atoms behind it. Holding the trigger on the timeline scrubs. |
-| **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
+| **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). A/X toggles play; B on the right hand steps one frame forward and Y on the left one back, repeating every 0.125 s after a 0.4 s hold (`h.stepHold`). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
 | **Hand tracking** | Requested as an optional feature. A pinch fires `select`/`squeeze` like a controller, and the laser is hidden for hands. |
 | **Emulation** | With `?emulate`, IWER replaces `navigator.xr`. Tests then drive `xrDevice.controllers.right.position / quaternion / updateButtonValue / updateAxes`, exactly like a real Quest. |
 
@@ -673,6 +728,7 @@ sequenceDiagram
 | Parsers, topology, geometry | `tools/test_parser.mjs`: Node + `assert` on the synthetic fixture (`tools/fixtures/`) and hand-built edge cases. Covers frame/ID ordering, image-flag unwrapping, scaled and triclinic coordinates, XYZ, stride, streaming, the memory-guard stride, truncated files, groups and water detection, repairing 1,566 split bonds, continuous paths, triclinic minimum image, measurements, periodic and triclinic bond inference, and 30k-atom bond-inference speed. | `node tools/test_parser.mjs` |
 | Desktop UI | Browser checks through `window.viewer` (`screenOf(i)` converts an atom to screen pixels for real clicks) | manual / scripted |
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
+| Voice lessons | Node: lesson-file round trip with audio bytes, sorting, metadata, the plain-array tour format, share-link stripping, file sniffing. Browser (real `MediaRecorder`, a 440 Hz tone standing in for the mic): desktop record, re-take keeps the caption, too-short rejected, save → reload → open restores the clip byte-for-byte and it decodes as audio, unsaved-clip warning; emulator VR: hold-to-talk, hear, two-press delete, wait toggle | `node tools/test_features.mjs`; manual / scripted |
 | VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel; after the UI update: the Explore/Lesson switch both ways, next stop, atoms +, water, play/pause, all by aiming the controller and pulling the trigger), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
 | Lessons and links | Browser checks: stops pause playback at the right frame, a copied share link restores mapping, settings and stops in student mode | manual / scripted |
 | Offline app | Browser check on a `dist/` build (launch config `viewer-dist`): the service worker caches all 26 files; with the server stopped, the page, three.js, the sample and its tour load; a gzipped dump (renamed, and without `.gz`), a plain dump with a data file, and XYZ all open from the file input | manual / scripted |
@@ -705,7 +761,7 @@ be physically realistic.
 | New fixed coloring mode (e.g. by residue) | Add an `<option>` to `#colorBy`, a branch in `computeStyle`, and a name in `COLOR_NAMES` (the VR menu and left stick cycle through all `#colorBy` options automatically) |
 | New colormap | A stop table in `props.js` and a branch in `colormap` / `gradientCSS` |
 | Another element-guessing rule | `guessElements` in `chem.js` (per-type features are in `feat`); add a case to `tools/test_features.mjs` |
-| Something else saved in lesson stops | `captureStop` / `applyStop` in `main.js` (the `v` object), plus a link parameter in `shareLink` / `loadFromParams` if it should also be a top-level setting |
+| Something else saved in lesson stops | `captureStop` / `applyStop` in `main.js` (the `v` object), plus a link parameter in `shareLink` / `loadFromParams` if it should also be a top-level setting. Lesson files carry any stop field automatically (`lessonToJSON` copies the stop); binary data needs a branch like `voice`. |
 | Hide another control in student mode | Add `class="adv"` to it in `index.html` |
 | New representation | Option in `#rep`, a radius rule in `atomRadius`, a bond radius in `updatePositions`, and an entry in `REPS` / `REP_NAMES` |
 | New VR menu button | Add `[id, labelFn]` to `GRID.explore` and/or `GRID.lesson` in `menu` (2×4 each; more needs a third row, so the canvas `H` and footer positions grow), a `case` in `menu.press`, and an `enabled` rule if it can be unavailable |

@@ -8,6 +8,7 @@ import {
 import { buildGroups, wrapGroups, atomPath, distance, angle, dihedral, waterGroups, minImage } from './analysis.js';
 import { nearMask, hbondParticipants, findHBonds, guessElements } from './chem.js';
 import { vectorFamilies, propLabel, propValues, propRange, colormap, gradientCSS, fmt } from './props.js';
+import { createRecorder, createPlayer, lessonToJSON, parseLesson, looksLikeLesson, stripVoice, fmtDur } from './voice.js';
 
 // ---------------------------------------------------------------------------
 // State
@@ -38,6 +39,13 @@ const S = {
   activeStop: -1, lastFrameInt: -1,
   mode: 'explore',               // 'explore' (free) or 'lesson' (stops fire, captions show)
   passthrough: true,             // in an AR session: show the room (false = dark backdrop, like VR)
+  detail: 'auto',                // drawing detail: 'auto' | 'high' | 'medium' | 'low' (see setLevel)
+  level: 0,                      // the detail in effect: 0 high, 1 medium, 2 low
+  autoLevel: 0,                  // what 'auto' picked for the current VR session
+  vrNote: '',                    // short note on the wrist menu (e.g. "detail lowered")
+  drawDirty: true,               // draw lists (visible atoms/bonds packed to the front) need rebuilding
+  voicePlaying: -1,              // stop whose voice clip is playing
+  recTick: 0,                    // whole seconds recorded so far (redraws the wrist menu)
   guessed: null,                 // { confidence, notes } from "guess elements"
   frameF: 0, playing: false, fps: 12,
   sel: [],                       // selected atom indices (up to MAX_SEL)
@@ -56,7 +64,7 @@ const params = new URLSearchParams(location.search);
 // Settings remembered between visits (per browser; harmless if storage is unavailable)
 
 const SETTINGS_KEY = 'md-vr-viewer-settings';
-const SAVED = ['rep', 'colorBy', 'atomScale', 'showBonds', 'showBox', 'smooth', 'wrap', 'fps', 'fsPerStep', 'shellR', 'arrowScale'];
+const SAVED = ['rep', 'colorBy', 'atomScale', 'showBonds', 'showBox', 'smooth', 'wrap', 'fps', 'fsPerStep', 'shellR', 'arrowScale', 'detail'];
 try {
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
   for (const k of SAVED) if (k in saved && typeof saved[k] === typeof S[k]) S[k] = saved[k];
@@ -68,6 +76,25 @@ function saveSettings() {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.fromEntries(SAVED.map((k) => [k, S[k]])))); } catch { /* ignore */ }
   }, 300);
 }
+
+// Voice clips on lesson stops (src/voice.js). Defined early: setMode and the menu use it.
+const voice = {
+  rec: createRecorder({ onTick: (t) => { if (Math.floor(t) !== S.recTick) { S.recTick = Math.floor(t); renderVoiceState(); } } }),
+  player: createPlayer({
+    onEnd: () => {
+      S.voicePlaying = -1;
+      // Playback waited for this clip: carry on (unless the user did something else meanwhile).
+      if (voice.resume && S.mode === 'lesson' && !S.playing) setPlaying(true);
+      voice.resume = false;
+      renderVoiceState();
+    },
+  }),
+  resume: false,      // playback was paused for a clip and continues when it ends
+  unsaved: false,     // clips recorded or deleted since the lesson file was last saved or opened
+  pending: null,      // the stop being recorded (the moment as it was when recording started)
+  busy: false,
+  deleteArmed: 0,     // time of the first press of "delete stop" in VR (a second press confirms)
+};
 
 // ?emulate loads Meta's WebXR emulator (IWER) so VR can be tried without a headset.
 if (params.has('emulate')) {
@@ -331,6 +358,7 @@ async function classify(file) {
   const name = file.name.toLowerCase().replace(/\.gz$/, '');
   if (/\.(data|lmp|dat)$/.test(name) || name.startsWith('data.')) return 'data';
   const head = (await headText(file)).trimStart();
+  if (/\.json$/.test(name) || looksLikeLesson(head)) return 'lesson';
   if (head.startsWith('ITEM:') || /^\d+\s*\r?\n/.test(head)) return 'traj';
   if (/^\s*\d+\s+atoms\s*$/m.test(head)) return 'data';
   return 'traj';
@@ -355,8 +383,16 @@ async function loadFiles(files) {
   const kinds = await Promise.all(files.map(classify));
   const trajFile = files.find((_, i) => kinds[i] === 'traj');
   const dataFile = files.find((_, i) => kinds[i] === 'data');
+  const lessonFile = files.find((_, i) => kinds[i] === 'lesson');
   const stride = Math.max(1, parseInt($('stride').value, 10) || 1);
   try {
+    let lesson = null;
+    if (lessonFile) {
+      lesson = parseLesson(await lessonFile.text());
+      // The lesson remembers its element map; use it unless one is typed in already.
+      if (lesson.meta.map && !$('typeMap').value.trim()) $('typeMap').value = lesson.meta.map;
+      if (!trajFile && !dataFile) { applyLesson(lesson, lessonFile.name); return; }
+    }
     let data = S.data;
     if (dataFile) {
       setStatus(`Reading data file ${dataFile.name}…`);
@@ -376,6 +412,7 @@ async function loadFiles(files) {
       S.name = trajFile.name;
       if (traj.stride !== stride) $('stride').value = String(traj.stride);
       setTrajectory(traj, ((performance.now() - t0) / 1000).toFixed(1));
+      if (lesson) applyLesson(lesson, lessonFile.name);
     } else if (S.traj) {
       if (mySeq !== loadSeq) return;
       S.data = data;
@@ -626,7 +663,8 @@ function disposeMesh(m) { if (m) { model.remove(m); m.geometry.dispose(); m.mate
 function buildMeshes() {
   disposeMesh(atomMesh); disposeMesh(boxLines);
   const n = S.traj.n;
-  const detail = n < 5000 ? [24, 16] : n < 30000 ? [14, 10] : [8, 6];
+  // Sphere detail: by system size at High; fixed low-poly spheres at Medium / Low.
+  const detail = S.level === 2 ? [7, 5] : S.level === 1 ? [10, 7] : n < 5000 ? [24, 16] : n < 30000 ? [14, 10] : [8, 6];
   atomMesh = new THREE.InstancedMesh(
     new THREE.SphereGeometry(1, ...detail),
     new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.05 }),
@@ -639,6 +677,7 @@ function buildMeshes() {
   model.add(atomMesh);
 
   buildBondMesh(S.bonds.length / 2);
+  S.drawDirty = true; S.nDraw = 0; S.nDrawBonds = 0; // lists are rebuilt on the next update
 
   boxLines = new THREE.LineSegments(
     new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(24 * 3), 3)),
@@ -689,12 +728,14 @@ function mergeGeometries(geos) {
 function buildBondMesh(nb) {
   disposeMesh(bondMesh);
   const capacity = Math.max(16, Math.ceil(nb * (S.dynBonds ? 1.5 : 1)));
-  const cyl = new THREE.CylinderGeometry(1, 1, 1, S.traj.n < 30000 ? 10 : 6, 1, true);
+  const radial = S.level === 2 ? 4 : S.level === 1 ? 6 : S.traj.n < 30000 ? 10 : 6;
+  const cyl = new THREE.CylinderGeometry(1, 1, 1, radial, 1, true);
   cyl.translate(0, 0.5, 0);
   bondMesh = new THREE.InstancedMesh(cyl, new THREE.MeshStandardMaterial({ roughness: 0.5 }), 2 * capacity);
   bondMesh.userData.capacity = capacity;
-  bondMesh.count = 2 * nb;
+  bondMesh.count = 0; // set by rebuildDrawLists
   bondMesh.frustumCulled = false;
+  S.drawDirty = true;
   bondMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   bondMesh.setColorAt(0, new THREE.Color()); // allocate instanceColor
   model.add(bondMesh);
@@ -704,8 +745,7 @@ function setBonds(bonds) {
   S.bonds = bonds;
   const nb = bonds.length / 2;
   if (nb > bondMesh.userData.capacity) buildBondMesh(nb);
-  bondMesh.count = 2 * nb;
-  applyBondColors();
+  S.drawDirty = true;
   updateBondInfo();
 }
 
@@ -781,12 +821,60 @@ function updateLegend() {
 }
 
 function applyColors() {
-  const n = S.traj.n;
-  const a = atomMesh.instanceColor.array;
-  a.set(S.colors.subarray(0, 3 * n));
+  if (!S.drawAtoms) return; // written when the draw lists are first built
+  const a = atomMesh.instanceColor.array, C = S.colors, A = S.drawAtoms;
+  for (let k = 0; k < S.nDraw; k++) {
+    const i = A[k];
+    a[3 * k] = C[3 * i]; a[3 * k + 1] = C[3 * i + 1]; a[3 * k + 2] = C[3 * i + 2];
+  }
   atomMesh.instanceColor.needsUpdate = true;
   applyBondColors();
 }
+function applyBondColors() {
+  if (!S.drawBonds) return;
+  const a = bondMesh.instanceColor.array, C = S.colors, B = S.bonds, D = S.drawBonds;
+  for (let k = 0; k < S.nDrawBonds; k++) {
+    const b = D[k], i = B[2 * b], j = B[2 * b + 1], o = 6 * k;
+    a[o] = C[3 * i]; a[o + 1] = C[3 * i + 1]; a[o + 2] = C[3 * i + 2];
+    a[o + 3] = C[3 * j]; a[o + 4] = C[3 * j + 1]; a[o + 5] = C[3 * j + 2];
+  }
+  bondMesh.instanceColor.needsUpdate = true;
+}
+
+/**
+ * Packs the atoms and bonds that are actually drawn to the front of the instanced meshes and
+ * sets their counts, so hidden atoms (e.g. water outside the shell) cost nothing on the GPU.
+ * At Low detail each water molecule is drawn as one bead at its oxygen: water hydrogens and
+ * water bonds are left out of the draw lists only, so H-bond and shell results don't change.
+ */
+function rebuildDrawLists() {
+  const n = S.traj.n, V = S.visible, W = S.isWater, el = S.elements, B = S.bonds;
+  const bead = S.level >= 2;
+  if (!S.drawAtoms || S.drawAtoms.length < n) S.drawAtoms = new Int32Array(n);
+  const A = S.drawAtoms;
+  let m = 0;
+  for (let i = 0; i < n; i++) if (V[i] && !(bead && W[i] && el[i] === 'H')) A[m++] = i;
+  S.nDraw = m;
+  atomMesh.count = m;
+  const nb = B.length / 2;
+  if (!S.drawBonds || S.drawBonds.length < nb) S.drawBonds = new Int32Array(Math.max(nb, 16));
+  const D = S.drawBonds;
+  let mb = 0;
+  for (let b = 0; b < nb; b++) {
+    const i = B[2 * b], j = B[2 * b + 1];
+    if (V[i] && V[j] && !(bead && (W[i] || W[j]))) D[mb++] = b;
+  }
+  S.nDrawBonds = mb;
+  bondMesh.count = 2 * mb;
+  S.drawDirty = false;
+  applyColors();
+}
+/** Radius an atom is drawn (and picked) with: a water oxygen becomes a bead at Low detail. */
+function drawRadius(i) {
+  if (S.level >= 2 && S.isWater[i]) return (S.rep === 'spacefill' ? 1.6 : S.rep === 'licorice' ? 0.45 : 0.65) * S.atomScale;
+  return S.radii[i];
+}
+
 
 /** Color options and arrow options for the loaded trajectory's extra columns. */
 function setupProps() {
@@ -812,15 +900,6 @@ function setupProps() {
   $('arrowScaleRow').style.display = S.arrows ? '' : 'none';
 }
 
-function applyBondColors() {
-  const c = new THREE.Color();
-  const B = S.bonds;
-  for (let b = 0; b < B.length; b += 2) {
-    bondMesh.setColorAt(b, c.fromArray(S.colors, 3 * B[b]));
-    bondMesh.setColorAt(b + 1, c.fromArray(S.colors, 3 * B[b + 1]));
-  }
-  bondMesh.instanceColor.needsUpdate = true;
-}
 
 const ELEMENT_CHOICES = ['H', 'C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'Na', 'K', 'Mg', 'Ca', 'Zn', 'Fe', 'Cu',
   'Si', 'Al', 'Li', 'B', 'He', 'Ar', 'Au', 'X'];
@@ -886,7 +965,7 @@ function updatePositions() {
   const { traj } = S;
   const nf = traj.frames.length;
   const i0 = Math.min(Math.floor(S.frameF), nf - 1);
-  const t = S.smooth ? S.frameF - i0 : 0;
+  const t = smoothNow() ? S.frameF - i0 : 0;
   const p0 = traj.frames[i0].pos;
   const cur = S.cur;
   if (t > 1e-4 && i0 + 1 < nf) {
@@ -931,11 +1010,14 @@ function updatePositions() {
 
   if (isPropColoring() && i0 !== propColorFrame) { updatePropColors(i0); applyColors(); }
 
-  // Atoms: write scale+translation matrices directly.
+  if (newContacts || S.drawDirty) rebuildDrawLists();
+
+  // Atoms: write scale+translation matrices directly, visible atoms only (packed).
   const am = atomMesh.instanceMatrix.array;
-  const R = S.radii;
-  for (let i = 0, o = 0; i < traj.n; i++, o += 16) {
-    const r = V[i] ? R[i] : 0;
+  const A = S.drawAtoms, bead = S.level >= 2;
+  for (let k = 0, o = 0; k < S.nDraw; k++, o += 16) {
+    const i = A[k];
+    const r = bead ? drawRadius(i) : S.radii[i];
     am[o] = r; am[o + 1] = 0; am[o + 2] = 0; am[o + 3] = 0;
     am[o + 4] = 0; am[o + 5] = r; am[o + 6] = 0; am[o + 7] = 0;
     am[o + 8] = 0; am[o + 9] = 0; am[o + 10] = r; am[o + 11] = 0;
@@ -943,20 +1025,21 @@ function updatePositions() {
   }
   atomMesh.instanceMatrix.needsUpdate = true;
 
-  // Bonds: two half-cylinders per bond, each colored like its atom.
-  bondMesh.visible = S.showBonds && S.bonds.length > 0 && S.rep !== 'spacefill';
+  // Bonds: two half-cylinders per drawn bond, each colored like its atom.
+  bondMesh.visible = S.showBonds && S.nDrawBonds > 0 && S.rep !== 'spacefill';
   if (bondMesh.visible) {
     const bm = bondMesh.instanceMatrix.array;
-    const B = S.bonds;
+    const B = S.bonds, D = S.drawBonds;
     const rb = (S.rep === 'licorice' ? 0.2 : 0.12) * S.atomScale;
     const hide = S.bondHideLen;
-    for (let b = 0; b < B.length; b += 2) {
+    for (let k = 0; k < S.nDrawBonds; k++) {
+      const b = 2 * D[k];
       const i = B[b], j = B[b + 1];
       const ax = cur[3 * i], ay = cur[3 * i + 1], az = cur[3 * i + 2];
       let dx = cur[3 * j] - ax, dy = cur[3 * j + 1] - ay, dz = cur[3 * j + 2] - az;
       const len = Math.hypot(dx, dy, dz);
-      const o = b * 16;
-      if (!V[i] || !V[j] || len > hide || len < 1e-6) {
+      const o = k * 32;
+      if (len > hide || len < 1e-6) { // still split by the box edge, or broken
         bm.fill(0, o, o + 32);
         continue;
       }
@@ -1010,6 +1093,7 @@ function onFrameChange(i0) {
     if (k >= 0) {
       applyStop(k, { playback: true });
       if ($('pauseAtStops').checked) { setPlaying(false); S.frameF = S.stops[k].f; S.dirty = true; }
+      if (S.stops[k].voice) playVoice(k, { wait: $('waitVoice').checked && S.playing });
     }
   }
   // Caption: the latest stop at or before this frame.
@@ -1337,15 +1421,16 @@ function pickAtom(originWorld, dirWorld) {
   _inv.copy(model.matrixWorld).invert();
   _o.copy(originWorld).applyMatrix4(_inv);
   _e.copy(originWorld).add(dirWorld).applyMatrix4(_inv).sub(_o).normalize();
-  const cur = S.cur, R = S.radii, V = S.visible;
+  const cur = S.cur, A = S.drawAtoms, bead = S.level >= 2;
+  if (!A) return null;
   let best = -1, bestT = Infinity;
-  for (let i = 0; i < S.traj.n; i++) {
-    if (!V[i]) continue;
+  for (let k = 0; k < S.nDraw; k++) {
+    const i = A[k];
     const cx = cur[3 * i] - _o.x, cy = cur[3 * i + 1] - _o.y, cz = cur[3 * i + 2] - _o.z;
     const tca = cx * _e.x + cy * _e.y + cz * _e.z;
     if (tca < 0) continue;
     const d2 = cx * cx + cy * cy + cz * cz - tca * tca;
-    const r = Math.max(R[i], 0.35);
+    const r = Math.max(bead ? drawRadius(i) : S.radii[i], 0.35);
     if (d2 > r * r) continue;
     const t = tca - Math.sqrt(r * r - d2);
     if (t < bestT) { bestT = t; best = i; }
@@ -1503,6 +1588,8 @@ $('atomScale').oninput = (e) => { S.atomScale = +e.target.value; saveSettings();
 $('showBonds').onchange = (e) => { S.showBonds = e.target.checked; saveSettings(); S.dirty = true; };
 $('showBox').onchange = (e) => { S.showBox = e.target.checked; saveSettings(); S.dirty = true; };
 $('smooth').onchange = (e) => { S.smooth = e.target.checked; saveSettings(); S.dirty = true; };
+$('detail').value = S.detail;
+$('detail').onchange = (e) => setDetail(e.target.value);
 $('wrap').onchange = (e) => { S.wrap = e.target.checked; saveSettings(); S.dirty = true; };
 $('fsPerStep').onchange = (e) => { S.fsPerStep = Math.max(0, +e.target.value || 0); saveSettings(); S.dirty = true; };
 $('shotBtn').onclick = () => { screenshotRequested = true; };
@@ -1623,8 +1710,9 @@ function setActiveStop(k) {
   S.activeStop = k;
   const st = S.stops[k];
   const cap = $('caption');
-  if (st && st.cap) {
-    cap.innerHTML = `<span class="n">Stop ${k + 1} of ${S.stops.length}</span>${esc(st.cap)}`;
+  if (st && (st.cap || st.voice)) {
+    const v = st.voice ? ` · voice ${fmtDur(st.voice.dur)}` : '';
+    cap.innerHTML = `<span class="n">Stop ${k + 1} of ${S.stops.length}${v}</span>${st.cap ? esc(st.cap) : '<i>Voice note</i>'}`;
     cap.classList.add('show');
   } else {
     cap.classList.remove('show');
@@ -1635,7 +1723,8 @@ function setActiveStop(k) {
 
 function renderStops() {
   $('stopList').innerHTML = S.stops.map((st, k) =>
-    `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span class="t" title="${esc(st.cap || '')}">${esc(st.cap || '(no caption)')}</span>` +
+    `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span class="t" title="${esc(st.cap || '')}">${esc(st.cap || (st.voice ? '(voice note)' : '(no caption)'))}</span>` +
+    (st.voice ? `<span class="v" title="Play or stop the voice clip">${S.voicePlaying === k ? '■' : '▶'} ${fmtDur(st.voice.dur)}</span>` : '') +
     '<span class="x adv" title="Delete this stop">✕</span></li>').join('');
   setActiveStop(Math.min(S.activeStop, S.stops.length - 1));
   $('stopsBadge').textContent = S.stops.length ? `${S.stops.length} stop${S.stops.length === 1 ? '' : 's'}` : '';
@@ -1657,7 +1746,7 @@ function setMode(mode, { restore = true } = {}) {
   $('modeLesson').classList.toggle('on', S.mode === 'lesson');
   $('modeExplore').setAttribute('aria-pressed', String(S.mode === 'explore'));
   $('modeLesson').setAttribute('aria-pressed', String(S.mode === 'lesson'));
-  if (S.mode === 'explore') { setActiveStop(-1); }
+  if (S.mode === 'explore') { setActiveStop(-1); stopVoice(); }
   else {
     const sec = document.querySelector('details[data-sec="lesson"]');
     if (sec) sec.open = true;
@@ -1697,12 +1786,19 @@ $('stopList').addEventListener('click', (e) => {
   if (!li) return;
   const k = +li.dataset.k;
   if (e.target.classList.contains('x')) {
-    if (!confirm(`Delete stop ${k + 1}${S.stops[k].cap ? ` ("${S.stops[k].cap.slice(0, 40)}")` : ''}?`)) return;
+    if (!confirm(`Delete stop ${k + 1}${S.stops[k].cap ? ` ("${S.stops[k].cap.slice(0, 40)}")` : ''}${S.stops[k].voice ? ' and its voice clip' : ''}?`)) return;
+    if (S.stops[k].voice) voice.unsaved = true;
+    stopVoice();
     S.stops.splice(k, 1);
     renderStops();
     return;
   }
+  if (e.target.classList.contains('v')) {
+    if (S.voicePlaying === k) stopVoice(); else playVoice(k);
+    return;
+  }
   applyStop(k);
+  playVoice(k);
   $('stopCaption').value = S.stops[k].cap || '';
 });
 $('addStop').onclick = () => {
@@ -1713,8 +1809,10 @@ $('addStop').onclick = () => {
 $('updateStop').onclick = () => {
   const k = S.activeStop;
   if (k < 0 || !S.traj) return;
-  S.stops.splice(k, 1);
-  addStop(captureStop($('stopCaption').value.trim()));
+  const old = S.stops.splice(k, 1)[0];
+  const st = captureStop($('stopCaption').value.trim());
+  if (old.voice) st.voice = old.voice; // updating the view or caption keeps the clip
+  addStop(st);
 };
 function gotoStop(dir) {
   if (!S.stops.length || !S.traj) return;
@@ -1732,6 +1830,7 @@ function gotoStop(dir) {
     if (k < 0) k = S.stops.length - 1;
   }
   applyStop(k);
+  playVoice(k);
 }
 $('prevStop').onclick = () => gotoStop(-1);
 $('nextStop').onclick = () => gotoStop(1);
@@ -1752,6 +1851,7 @@ const b64dec = (str) => {
 const source = { traj: params.get('traj'), data: params.get('data') };
 /** User-picked files: they have no URL for share links, and the sample's tour does not apply to them. */
 function openLocal(files) {
+  if ([...files].every((f) => /\.json$/i.test(f.name))) { loadFiles(files); return; } // just a lesson file
   source.traj = source.data = null;
   if (S.sampleTour) { S.stops = []; S.activeStop = -1; S.sampleTour = false; renderStops(); setMode('explore'); }
   if ($('typeMap').value === SAMPLE.map) $('typeMap').value = ''; // the sample's map is not for this file
@@ -1775,7 +1875,7 @@ function shareLink() {
   if (S.waterMode === 'near') add('shell', String(S.shellR));
   if (S.hbonds !== 'off') add('hb', S.hbonds);
   if (S.arrows) add('arrows', S.arrows);
-  if (S.stops.length) add('stops', b64enc(S.stops));
+  if (S.stops.length) add('stops', b64enc(stripVoice(S.stops)));
   if ($('linkStudent').checked) add('student', '');
   return { url: `${location.origin}${location.pathname}?${q.join('&')}`, local };
 }
@@ -1786,8 +1886,153 @@ $('copyLink').onclick = async () => {
   try { await navigator.clipboard.writeText(url); copied = true; } catch { /* insecure context etc. */ }
   $('linkInfo').innerHTML = (copied ? 'Link copied. ' : 'Copy this link: ') +
     (local ? `It expects <code>${esc(S.name)}</code>${S.dataName ? ` and <code>${esc(S.dataName)}</code>` : ''} next to <code>index.html</code> on the server. ` : '') +
+    (S.stops.some((st) => st.voice) ? 'Voice clips are not in links: use <b>Save lesson file</b> and share that file too (or host it and add <code>&amp;lesson=</code> its address). ' : '') +
     `<br><input type="text" readonly value="${esc(url)}" onclick="this.select()">`;
 };
+
+// ---------------------------------------------------------------------------
+// Voice clips: recording, playback, lesson files.
+
+/** The stop at the current frame, else (in Lesson mode) the active one; -1 if none. */
+function stopIndexHere() {
+  if (!S.traj) return -1;
+  const f = Math.round(S.frameF);
+  const k = S.stops.findIndex((st) => st.f === f);
+  return k >= 0 ? k : S.mode === 'lesson' ? S.activeStop : -1;
+}
+function voiceMsg(text) {
+  $('voiceInfo').textContent = text;
+  if (renderer.xr.isPresenting) vrNote(text);
+}
+/** A short vibration on every controller (start and end of a recording). */
+function buzz() {
+  for (const h of hands) {
+    const act = h.source && h.source.gamepad && h.source.gamepad.hapticActuators && h.source.gamepad.hapticActuators[0];
+    if (act && act.pulse) act.pulse(0.6, 60).catch(() => {});
+  }
+}
+function renderVoiceState() {
+  const b = $('recVoice');
+  b.textContent = voice.rec.recording ? `■ Stop recording (${fmtDur(S.recTick)})` : '● Record voice';
+  b.classList.toggle('rec', voice.rec.recording);
+  [...$('stopList').querySelectorAll('.v')].forEach((el) => {
+    const k = +el.parentElement.dataset.k;
+    if (S.stops[k] && S.stops[k].voice) el.textContent = `${S.voicePlaying === k ? '■' : '▶'} ${fmtDur(S.stops[k].voice.dur)}`;
+  });
+}
+/** Starts recording. The moment (frame, view, selection) is saved now, the clip when you stop. */
+async function startVoice() {
+  if (!S.traj || voice.rec.recording || voice.busy) return;
+  if (!voice.rec.supported) { voiceMsg('This browser cannot record audio.'); return; }
+  voice.busy = true;
+  setPlaying(false);
+  stopVoice();
+  voice.pending = captureStop('');
+  try {
+    await voice.rec.start();
+    S.recTick = 0;
+    buzz();
+    voiceMsg('Recording… release (or click Stop) when you are done.');
+  } catch (e) {
+    voice.pending = null;
+    voiceMsg(e && e.name === 'NotAllowedError'
+      ? 'Microphone blocked. Allow it for this page (in VR: take off the headset and press Allow microphone in the Lesson panel).'
+      : `Could not record: ${e.message}`);
+  }
+  voice.busy = false;
+  renderVoiceState();
+}
+/** Stops recording and puts the clip on the stop at that frame (a re-take keeps the caption). */
+async function finishVoice() {
+  if (!voice.rec.recording) return;
+  const clip = await voice.rec.stop();
+  buzz();
+  const st = voice.pending;
+  voice.pending = null;
+  renderVoiceState();
+  if (!clip || !st) { voiceMsg('Too short: hold the button for as long as you talk.'); return; }
+  st.voice = clip;
+  const k = S.stops.findIndex((x) => x.f === st.f);
+  if (k >= 0) { st.cap = S.stops[k].cap; S.stops[k] = st; } else { S.stops.push(st); S.stops.sort((a, b) => a.f - b.f); }
+  S.sampleTour = false; // it's the user's own lesson now
+  voice.unsaved = true;
+  if (S.mode !== 'lesson') setMode('lesson', { restore: false });
+  renderStops();
+  setActiveStop(S.stops.indexOf(st));
+  voiceMsg(`Voice clip on stop ${S.stops.indexOf(st) + 1} (${fmtDur(clip.dur)}). Save the lesson file to keep it.`);
+}
+/** Plays stop k's clip. wait: pause playback until it ends, then carry on. */
+function playVoice(k, { wait = false } = {}) {
+  const st = S.stops[k];
+  if (!st || !st.voice || voice.rec.recording || S.mode !== 'lesson') return;
+  if (!voice.player.play(k, st.voice)) return;
+  S.voicePlaying = k;
+  if (wait && S.playing) { setPlaying(false); voice.resume = true; }
+  renderVoiceState();
+}
+function stopVoice() {
+  voice.player.stop();
+  S.voicePlaying = -1;
+  voice.resume = false;
+  renderVoiceState();
+}
+/** VR: delete the stop here; the first press arms it, a second press within 3 s deletes. */
+function deleteStopHere() {
+  const k = stopIndexHere();
+  if (k < 0) return;
+  if (performance.now() - voice.deleteArmed > 3000) {
+    voice.deleteArmed = performance.now();
+    vrNote(`Press delete again to remove stop ${k + 1}${S.stops[k].voice ? ' and its voice clip' : ''}`);
+    setTimeout(() => { voice.deleteArmed = 0; }, 3100);
+    return;
+  }
+  voice.deleteArmed = 0;
+  if (S.stops[k].voice) voice.unsaved = true;
+  stopVoice();
+  S.stops.splice(k, 1);
+  renderStops();
+  vrNote(`Stop ${k + 1} deleted`);
+}
+/** Replaces the stops with a lesson file's (after its trajectory, if both were opened). */
+function applyLesson(lesson, name) {
+  stopVoice();
+  S.stops = lesson.stops;
+  S.activeStop = -1;
+  S.sampleTour = false;
+  voice.unsaved = false;
+  if (lesson.meta.fs && !S.fsPerStep) { S.fsPerStep = +lesson.meta.fs || 0; $('fsPerStep').value = String(S.fsPerStep || ''); }
+  renderStops();
+  setMode('lesson');
+  S.lastFrameInt = -1; S.dirty = true; // show the caption for this frame
+  const other = lesson.meta.trajectory && S.name && lesson.meta.trajectory !== S.name ? ` It was made for ${lesson.meta.trajectory}.` : '';
+  const msg = `Lesson ${name}: ${lesson.stops.length} stops, ${lesson.clips} voice clip${lesson.clips === 1 ? '' : 's'}.${other}`;
+  $('voiceInfo').textContent = msg;
+  setStatus(S.traj ? `${$('status').textContent} · ${msg}` : `${msg} Now open its trajectory.`);
+}
+$('recVoice').onclick = () => (voice.rec.recording ? finishVoice() : startVoice());
+$('allowMic').onclick = async () => {
+  try { await voice.rec.allow(); voiceMsg('Microphone allowed. In VR, hold “● hold to talk” on the wrist menu.'); }
+  catch (e) { voiceMsg(`Microphone not available: ${e.message}`); }
+};
+$('saveLesson').onclick = async () => {
+  if (!S.stops.length) { voiceMsg('No stops to save yet.'); return; }
+  const text = await lessonToJSON(S.stops, {
+    trajectory: S.name || undefined, map: $('typeMap').value.trim() || undefined, fs: S.fsPerStep || undefined,
+  });
+  const base = (S.name || 'lesson').replace(/\.gz$/i, '').replace(/\.[^.]+$/, '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  a.download = `${base}.lesson.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  voice.unsaved = false;
+  voiceMsg(`Saved ${a.download} (${(text.length / 1e6).toFixed(2)} MB). Open it together with the trajectory to play the lesson.`);
+};
+if (!voice.rec.supported) { $('recVoice').disabled = true; $('allowMic').disabled = true; $('recVoice').title = 'This browser cannot record audio'; }
+// Recorded clips live only in this page until the lesson file is saved.
+window.addEventListener('beforeunload', (e) => {
+  if (voice.unsaved && S.stops.some((st) => st.voice)) { e.preventDefault(); e.returnValue = ''; }
+});
 
 let dragDepth = 0;
 window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('drop').classList.add('show'); });
@@ -1839,7 +2084,7 @@ for (let k = 0; k < 2; k++) {
     const hit = rayHit(h);
     pickAction(hit ? hit.index : -1, false);
   });
-  ctrl.addEventListener('selectend', () => { h.menuDown = null; });
+  ctrl.addEventListener('selectend', () => { if (h.menuDown) menu.release(h.menuDown); h.menuDown = null; });
   ctrl.addEventListener('squeezestart', () => { grabbers.add(h); beginGrab(); });
   ctrl.addEventListener('squeezeend', () => { grabbers.delete(h); beginGrab(); });
 }
@@ -1872,7 +2117,8 @@ function updateHover() {
         continue;
       }
     }
-    // 2. Atoms.
+    // 2. Atoms (every 2nd frame at Medium, every 3rd at Low: picking is O(atoms) per hand).
+    if (S.level > 0 && xrFrames % (S.level + 1) !== 0) continue;
     const hit = pickAtom(_ro, _rd);
     h.hover.visible = !!hit;
     h.hover.scale.setScalar(1);
@@ -1934,7 +2180,16 @@ function pollGamepads(dt) {
     const edge = (i) => pressed[i] && !h.prevButtons[i];
     const right = h.source.handedness !== 'left';
     if (edge(4)) setPlaying(!S.playing);                                   // A / X
-    if (edge(5)) setRep(REPS[(REPS.indexOf(S.rep) + 1) % REPS.length]);    // B / Y
+    // B (right hand) steps one frame forward, Y (left hand) one back. Holding repeats, like a
+    // keyboard key: after 0.4 s, about 8 frames per second.
+    if (pressed[5] && S.traj) {
+      const dir = right ? 1 : -1;
+      if (edge(5)) { setPlaying(false); stepFrame(dir); h.stepHold = 0; }
+      else {
+        h.stepHold = (h.stepHold || 0) + dt;
+        if (h.stepHold > 0.4) { stepFrame(dir); h.stepHold -= 0.125; }
+      }
+    }
     // xr-standard mapping: thumbstick on axes 2/3 (button 3); touchpad on axes 0/1 (button 2).
     // Controllers with only a touchpad (HTC Vive wands) use it as the stick, read only while touched
     // so a resting thumb does nothing; pressing the pad resets the view.
@@ -1977,7 +2232,7 @@ function pollGamepads(dt) {
 
 // Wrist menu: on the left controller (or the only one). Point at it with the other hand's ray.
 const menu = (() => {
-  const W = 800, H = 880;
+  const W = 800, H = 980;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -1998,10 +2253,14 @@ const menu = (() => {
     ['fwd', () => 'step  ▶'], ['reset', () => 'reset view']]
     .map(([id, label], k) => ({ id, label, ...ROW(k), y: 456, h: 80 }));
   const MODES = [['modeExplore', () => 'Explore'], ['modeLesson', () => `Lesson${S.stops.length ? ` (${S.stops.length})` : ''}`]]
-    .map(([id, label], k) => ({ id, label, x: 30 + k * 370, w: 370, y: 548, h: 56, seg: true }));
-  // In AR the switch narrows to make room for the passthrough toggle.
-  const MODES_AR = [...MODES.map((b, k) => ({ ...b, x: 30 + k * 270, w: 270 })),
-    { id: 'passthrough', label: () => (S.passthrough ? 'room: on' : 'room: off'), x: 582, w: 188, y: 548, h: 56 }];
+    .map(([id, label], k) => ({ id, label, x: 30 + k * 270, w: 270, y: 548, h: 56, seg: true }));
+  // The mode switch shares its row with the detail button (and, in AR, the passthrough toggle).
+  const SHORT = ['high', 'med', 'low'];
+  const detailLabel = () => (S.detail === 'auto' ? `auto: ${SHORT[S.level]}` : `detail: ${SHORT[S.level]}`);
+  const MODES_VR = [...MODES, { id: 'detail', label: detailLabel, x: 582, w: 188, y: 548, h: 56 }];
+  const MODES_AR = [...MODES.map((b, k) => ({ ...b, x: 30 + k * 215, w: 215 })),
+    { id: 'detail', label: detailLabel, x: 472, w: 146, y: 548, h: 56 },
+    { id: 'passthrough', label: () => (S.passthrough ? 'room: on' : 'room: off'), x: 624, w: 146, y: 548, h: 56 }];
   const GRID = {
     explore: [['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
       ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]],
@@ -2016,7 +2275,15 @@ const menu = (() => {
   const grid = (mode) => GRID[mode].map(([id, label], k) =>
     ({ id, label, ...ROW(k), y: 616 + Math.floor(k / 4) * 96, h: 84 }));
   const GRIDS = { explore: grid('explore'), lesson: grid('lesson') };
-  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES), ...GRIDS[S.mode]];
+  // Third row, both modes: voice clips. Hold "talk" to record onto the stop at this frame.
+  const VOICE_ROW = [
+    ['rec', () => (voice.rec.recording ? `■ ${fmtDur(S.recTick)} release` : '● hold to talk')],
+    ['hear', () => (S.voicePlaying >= 0 ? '■ stop voice' : '▶ hear stop')],
+    ['delStop', () => (voice.deleteArmed ? 'press again' : '✕ delete stop')],
+    ['waitVoice', () => ($('waitVoice').checked ? 'wait for voice' : "don't wait")],
+  ].map(([id, label], k) => ({ id, label, ...ROW(k), y: 808, h: 84 }));
+  const student = () => document.body.classList.contains('student');
+  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES_VR), ...GRIDS[S.mode], ...VOICE_ROW];
   /** Sets a page control and fires its handler, so desktop and VR stay in sync. */
   const nudge = (id, d) => {
     const el = $(id);
@@ -2024,8 +2291,11 @@ const menu = (() => {
     el.dispatchEvent(new Event('input'));
   };
   const enabled = (id) => {
-    if (id === 'reset' || id === 'modeExplore' || id === 'modeLesson' || id === 'passthrough') return true;
+    if (id === 'reset' || id === 'modeExplore' || id === 'modeLesson' || id === 'passthrough' || id === 'detail' || id === 'waitVoice') return true;
     if (!S.traj) return false;
+    if (id === 'rec') return voice.rec.supported && !student();
+    if (id === 'hear') { const k = stopIndexHere(); return S.voicePlaying >= 0 || (k >= 0 && !!S.stops[k].voice); }
+    if (id === 'delStop') return !student() && stopIndexHere() >= 0;
     if (id === 'water') return !$('water').disabled;
     if (id === 'hb') return !$('hbonds').disabled;
     if (id === 'arrows') return S.families.length > 0;
@@ -2054,6 +2324,8 @@ const menu = (() => {
     if (hit.id === 'modeExplore') { setMode('explore'); return; }
     if (hit.id === 'modeLesson') { setMode('lesson'); return; }
     if (hit.id === 'passthrough') { setPassthrough(!S.passthrough); return; }
+    if (hit.id === 'waitVoice') { $('waitVoice').checked = !$('waitVoice').checked; return; }
+    if (hit.id === 'detail') { setDetail(DETAILS[(DETAILS.indexOf(S.detail) + 1) % DETAILS.length]); vrNote(''); return; }
     if (!S.traj || (hit.id !== 'timeline' && !enabled(hit.id))) return;
     switch (hit.id) {
       case 'timeline':
@@ -2072,7 +2344,10 @@ const menu = (() => {
       case 'arrows': setArrows(nextIn(['', ...S.families.map((f) => f.name)], S.arrows)); break;
       case 'prevStop': gotoStop(-1); break;
       case 'nextStop': gotoStop(1); break;
-      case 'firstStop': applyStop(0); break;
+      case 'firstStop': applyStop(0); playVoice(0); break;
+      case 'rec': startVoice(); break;
+      case 'hear': if (S.voicePlaying >= 0) stopVoice(); else { if (S.mode !== 'lesson') setMode('lesson', { restore: false }); playVoice(stopIndexHere()); } break;
+      case 'delStop': deleteStopHere(); break;
       case 'pauseStops': $('pauseAtStops').checked = !$('pauseAtStops').checked; break;
       case 'smaller': nudge('atomScale', -0.1); break;
       case 'bigger': nudge('atomScale', 0.1); break;
@@ -2103,7 +2378,8 @@ const menu = (() => {
     const stop = S.stops[S.activeStop];
     const key = [S.name, f, nf, S.playing, Math.round(S.fps), S.rep, S.colorBy, S.waterMode, S.showPaths, S.hbonds,
       S.arrows, S.hbCount, sel, tm, S.activeStop, stop && stop.cap, S.stops.length, !!S.series,
-      [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked, arSession, S.passthrough].join('|');
+      [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked, arSession, S.passthrough, S.detail, S.level, S.vrNote,
+      voice.rec.recording, S.recTick, S.voicePlaying, voice.deleteArmed, $('waitVoice').checked, stop && !!stop.voice].join('|');
     if (key === last) return;
     last = key;
 
@@ -2122,9 +2398,9 @@ const menu = (() => {
       ? `${S.playing ? '▶ playing' : '❚❚ paused'} · ${Math.round(S.fps)} fps · frame ${f + 1}/${nf}${tm ? ' · ' + tm : ` · step ${step}`}`
       : 'Take off the headset and load a file on the page.';
     ctx.fillText(clip(ctx, status, W - 60), 30, 98);
-    ctx.fillStyle = '#ffff66';
+    ctx.fillStyle = S.vrNote ? '#f0b429' : '#ffff66';
     ctx.font = '26px system-ui, sans-serif';
-    ctx.fillText(clip(ctx, sel, W - 60), 30, 138);
+    ctx.fillText(clip(ctx, S.vrNote || sel, W - 60), 30, 138);
 
     // Timeline: track, progress, stop ticks, playhead
     const tHover = hover.has('timeline');
@@ -2143,20 +2419,21 @@ const menu = (() => {
     ctx.beginPath(); ctx.arc(headX, TL.y + TL.h / 2, tHover ? 20 : 16, 0, Math.PI * 2); ctx.fill();
 
     // Info area: lesson caption takes priority, then the measurement plot, then a hint.
-    if (S.mode === 'lesson' && stop && stop.cap) {
+    if (S.mode === 'lesson' && stop && (stop.cap || stop.voice)) {
       ctx.fillStyle = '#10243d';
       ctx.beginPath(); ctx.roundRect(INFO.x, INFO.y, INFO.w, INFO.h, 14); ctx.fill();
       ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = '#8b949e'; ctx.font = '20px system-ui, sans-serif';
-      ctx.fillText(`stop ${S.activeStop + 1} of ${S.stops.length}`, INFO.x + 16, INFO.y + 26);
+      ctx.fillText(`stop ${S.activeStop + 1} of ${S.stops.length}${stop.voice ? ` · voice ${fmtDur(stop.voice.dur)}` : ''}`, INFO.x + 16, INFO.y + 26);
+      const capText = stop.cap || (S.voicePlaying === S.activeStop ? 'Playing the voice note…' : 'Voice note: press ▶ hear stop to listen.');
       ctx.fillStyle = '#e6edf3';
       // Largest font at which the whole caption fits (5-7 lines); the last size clips if it must.
       for (const [px, lh] of [[26, 31], [23, 27], [20, 24]]) {
         ctx.font = `${px}px system-ui, sans-serif`;
         const maxLines = Math.floor((INFO.h - 46) / lh);
-        const lines = wrap(stop.cap, INFO.w - 32, 99);
+        const lines = wrap(capText, INFO.w - 32, 99);
         if (lines.length <= maxLines || px === 20) {
-          wrap(stop.cap, INFO.w - 32, maxLines).forEach((l, k) => ctx.fillText(l, INFO.x + 16, INFO.y + 62 + lh * k));
+          wrap(capText, INFO.w - 32, maxLines).forEach((l, k) => ctx.fillText(l, INFO.x + 16, INFO.y + 62 + lh * k));
           break;
         }
       }
@@ -2179,8 +2456,10 @@ const menu = (() => {
       const active = (b.id === 'play' && S.playing) || (b.id === 'water' && S.waterMode !== 'all') ||
         (b.id === 'paths' && S.showPaths) || (b.id === 'hb' && S.hbonds !== 'off') || (b.id === 'arrows' && !!S.arrows) ||
         (b.id === 'pauseStops' && $('pauseAtStops').checked) || (b.id === 'passthrough' && S.passthrough) ||
+        (b.id === 'waitVoice' && $('waitVoice').checked) || (b.id === 'hear' && S.voicePlaying >= 0) ||
         (b.id === 'modeExplore' && S.mode === 'explore') || (b.id === 'modeLesson' && S.mode === 'lesson');
-      ctx.fillStyle = hv ? '#1f6feb' : active ? (b.seg ? '#2b5a91' : '#1c3a5e') : (b.seg ? '#161b22' : '#21262d');
+      ctx.fillStyle = b.id === 'rec' && voice.rec.recording ? '#a40e26'
+        : hv ? '#1f6feb' : active ? (b.seg ? '#2b5a91' : '#1c3a5e') : (b.seg ? '#161b22' : '#21262d');
       ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, b.seg ? 12 : 16); ctx.fill();
       ctx.strokeStyle = hv ? '#58a6ff' : '#30363d'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = on ? '#e6edf3' : '#484f58';
@@ -2193,8 +2472,8 @@ const menu = (() => {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#8b949e';
     ctx.font = '23px system-ui, sans-serif';
-    ctx.fillText('grip: grab & move · both grips: scale/rotate · trigger: pick atoms', 30, 810);
-    ctx.fillText('A/X play · B/Y style · R stick/pad: scrub · click it: reset', 30, 846);
+    ctx.fillText('grip: grab & move · both grips: scale/rotate · trigger: pick atoms', 30, 924);
+    ctx.fillText('A/X play · B frame ▶ · Y frame ◀ · R stick: scrub · click: reset', 30, 958);
     tex.needsUpdate = true;
   }
 
@@ -2206,7 +2485,9 @@ const menu = (() => {
     mesh.lookAt(_head); // +Z (the readable side) toward the eyes, whatever the wrist angle
   }
 
-  return { mesh, canvas, hitTest, press, draw, faceHead, setHover(ids) { hover = new Set(ids); } };
+  /** Trigger released while it was held on a button (hold-to-talk ends here). */
+  function release(id) { if (id === 'rec') finishVoice(); }
+  return { mesh, canvas, hitTest, press, release, draw, faceHead, setHover(ids) { hover = new Set(ids); } };
 })();
 
 function placeWristPanel() {
@@ -2216,17 +2497,83 @@ function placeWristPanel() {
   else if (menu.mesh.parent) menu.mesh.parent.remove(menu.mesh);
 }
 
-renderer.xr.addEventListener('sessionstart', () => { label.setWidth(0.16); grabbers.clear(); S.needPlace = true; });
-renderer.xr.addEventListener('sessionend', () => { label.setWidth(0.26); grabbers.clear(); resetView(); });
+renderer.xr.addEventListener('sessionstart', () => {
+  label.setWidth(0.16); grabbers.clear(); S.needPlace = true;
+  S.autoLevel = autoLevel();
+  perf.slow = 0; perf.ema = 0; perf.cool = 2; // the first seconds (controller models loading) don't count
+  refreshLevel();
+});
+renderer.xr.addEventListener('sessionend', () => { label.setWidth(0.26); grabbers.clear(); S.vrNote = ''; refreshLevel(); resetView(); });
+
+// ---------------------------------------------------------------------------
+// Detail levels: keep VR smooth on big systems. They only change how things are drawn, never
+// what is computed (H-bond and shell results are the same at every level).
+//   High   : as before (sphere detail by system size, smooth in-between frames).
+//   Medium : low-poly spheres and bonds; in VR, playback moves atoms on whole data frames only;
+//            hover picking every 2nd frame.
+//   Low    : Medium, plus each water molecule drawn as one bead; picking every 3rd frame.
+// 'auto' uses High on the desktop. In VR it starts from the number of drawn atoms and the device,
+// then steps down by itself (with a note on the wrist menu) if frames keep arriving late.
+
+const DETAIL_NAMES = ['high', 'medium', 'low'];
+const DETAILS = ['auto', 'high', 'medium', 'low'];
+const perf = { ema: 0, slow: 0, cool: 0, noteUntil: 0 };
+
+/** Starting level for a VR session in auto mode. */
+function autoLevel() {
+  if (!S.traj) return 0;
+  let v = 0;
+  for (let i = 0; i < S.traj.n; i++) v += S.visible[i];
+  const standalone = /OculusBrowser|Quest|Pico|Wolvic/.test(navigator.userAgent);
+  const [medium, low] = standalone ? [6000, 20000] : [30000, 80000];
+  return v > low ? 2 : v > medium ? 1 : 0;
+}
+function effectiveLevel() {
+  if (S.detail !== 'auto') return DETAIL_NAMES.indexOf(S.detail);
+  return renderer.xr.isPresenting ? S.autoLevel : 0;
+}
+function refreshLevel() {
+  const lv = effectiveLevel();
+  if (lv === S.level) return;
+  S.level = lv;
+  if (S.traj) buildMeshes(); // new sphere/bond geometry; draw lists are rebuilt on the next frame
+  S.dirty = true;
+}
+function setDetail(d) {
+  S.detail = DETAILS.includes(d) ? d : 'auto';
+  $('detail').value = S.detail;
+  saveSettings();
+  refreshLevel();
+}
+function smoothNow() { return S.smooth && !(renderer.xr.isPresenting && S.level >= 1); }
+function vrNote(text) { S.vrNote = text; perf.noteUntil = performance.now() + 6000; }
+
+/** In auto mode, steps detail down when VR frames keep missing the headset's frame rate. */
+function watchFrameRate(raw) {
+  if (S.vrNote && performance.now() > perf.noteUntil) S.vrNote = '';
+  if (S.detail !== 'auto' || !S.traj || S.autoLevel >= 2) return;
+  if (perf.cool > 0) { perf.cool -= raw; return; }
+  const target = 1 / ((xrSession && xrSession.frameRate) || 72);
+  perf.ema = perf.ema ? perf.ema * 0.9 + raw * 0.1 : raw;
+  perf.slow = perf.ema > target * 1.3 ? perf.slow + raw : Math.max(0, perf.slow - raw);
+  if (perf.slow > 2) { // about 2 s of late frames
+    S.autoLevel++;
+    refreshLevel();
+    perf.slow = 0; perf.ema = 0; perf.cool = 3; // let the new level settle before judging again
+    vrNote(`Detail lowered to ${DETAIL_NAMES[S.level]} to keep VR smooth (menu: detail)`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Loop
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop((time, frame) => {
-  const dt = Math.min(clock.getDelta(), 0.1);
+  const raw = clock.getDelta();
+  const dt = Math.min(raw, 0.1);
   if (renderer.xr.isPresenting) {
     xrFrames++;
+    watchFrameRate(raw);
     if (xrFrames === 1) xrLog('first VR frame');
     else if (xrFrames === 90) { xrLog('running (90 frames)', { ok: true }); $('xrNote')?.remove(); }
     if (S.needPlace && placeInFrontOfHead(frame)) { S.needPlace = false; if (xrFrames < 90) xrLog('placed'); }
@@ -2240,9 +2587,11 @@ renderer.setAnimationLoop((time, frame) => {
   if (S.traj) {
     if (S.playing) {
       const nf = S.traj.frames.length;
+      const before = Math.floor(S.frameF);
       S.frameF += dt * S.fps;
       if (S.frameF > nf - 1) { S.frameF = 0; S.looped = true; }
-      S.dirty = true;
+      // Without in-between frames, only a new data frame needs new geometry.
+      if (smoothNow() || Math.floor(S.frameF) !== before) S.dirty = true;
     }
     if (S.dirty) { updatePositions(); S.dirty = false; }
     else if (S.sel.length) updateLabelPosition(); // root may have been grabbed
@@ -2274,7 +2623,15 @@ async function loadFromParams() {
     if (params.get('arrows')) setArrows(params.get('arrows'));
     if (S.stops.length && S.traj) { S.lastFrameInt = -1; S.dirty = true; } // show a caption at frame 0
   };
-  if (params.has('sample')) { await loadSample(); applyViewParams(); return; }
+  const lessonFromLink = async () => {
+    if (!params.get('lesson')) return;
+    try {
+      const r = await fetch(params.get('lesson'));
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      applyLesson(parseLesson(await r.text()), decodeURIComponent(params.get('lesson').split('/').pop()));
+    } catch (err) { setStatus(`Could not open the lesson file in this link (${err.message}).`); }
+  };
+  if (params.has('sample')) { await loadSample(); applyViewParams(); await lessonFromLink(); return; }
   const urls = ['traj', 'data'].map((k) => params.get(k)).filter(Boolean);
   if (!urls.length) return;
   try {
@@ -2287,6 +2644,7 @@ async function loadFromParams() {
     }));
     await loadFiles(files);
     applyViewParams();
+    await lessonFromLink();
   } catch (err) {
     setStatus(`Could not open the linked files (${err.message}).`);
   }
@@ -2295,7 +2653,7 @@ loadFromParams();
 
 // For debugging in the console.
 window.viewer = {
-  S, select, resetView, menu, hands, updatePositions,
+  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice,
   /** Screen position (CSS px) of atom i, for automated tests. */
   screenOf(i) {
     const v = new THREE.Vector3().fromArray(S.cur, 3 * i);

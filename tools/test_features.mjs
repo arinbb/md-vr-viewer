@@ -7,6 +7,8 @@ import { inferBonds } from '../src/model.js';
 import { buildGroups, waterGroups } from '../src/analysis.js';
 import { nearMask, hbondParticipants, findHBonds, guessElements } from '../src/chem.js';
 import { vectorFamilies, propRange, propValues, colormap, propLabel } from '../src/props.js';
+import { lessonToJSON, parseLesson, looksLikeLesson, stripVoice, bytesToB64, b64ToBytes, fmtDur } from '../src/voice.js';
+import { readFileSync } from 'node:fs';
 
 // A small periodic box: one water dimer with a linear H-bond, plus a distant third water.
 // Water A: O at origin-ish, H pointing at water B's O. Water B: 2.9 Å away along x.
@@ -155,4 +157,48 @@ console.log('extra column tests passed');
   const h3o = hbondParticipants(['O', 'H', 'H', 'H'], [0, 1, 0, 2, 0, 3]);
   assert.equal(h3o.acc.length, 0, 'H3O+ oxygen does not accept');
   console.log('periodic contact tests passed');
+}
+
+// ---- Lesson files with voice clips
+{
+  // base64 round trip, including sizes past one 32 KB chunk
+  const bytes = Uint8Array.from({ length: 100000 }, (_, i) => (i * 37) & 255);
+  assert.deepEqual(b64ToBytes(bytesToB64(bytes)), bytes, 'base64 round trip');
+
+  const audio = Uint8Array.from({ length: 5000 }, (_, i) => (i * 13) & 255);
+  const stops = [
+    { f: 30, cap: 'second', sel: [5], v: { rep: 'ballstick' } },
+    { f: 3, cap: '', sel: [], v: {}, voice: { blob: new Blob([audio], { type: 'audio/webm;codecs=opus' }), mime: 'audio/webm;codecs=opus', dur: 4.567 } },
+  ];
+  const text = await lessonToJSON(stops, { trajectory: 'run.lammpstrj', map: '1:O 2:H' });
+  assert.ok(looksLikeLesson(text), 'a saved lesson is recognised');
+  const back = parseLesson(text);
+  assert.equal(back.stops.length, 2);
+  assert.equal(back.clips, 1);
+  assert.deepEqual(back.stops.map((s) => s.f), [3, 30], 'stops come back sorted by frame');
+  assert.equal(back.meta.trajectory, 'run.lammpstrj');
+  assert.equal(back.meta.map, '1:O 2:H');
+  const v = back.stops[0].voice;
+  assert.equal(v.mime, 'audio/webm;codecs=opus');
+  assert.equal(v.dur, 4.57);
+  assert.deepEqual(new Uint8Array(await v.blob.arrayBuffer()), audio, 'audio bytes survive the file');
+  assert.equal(back.stops[1].voice, undefined);
+
+  // share links: no audio, but they say a clip existed
+  const lean = stripVoice(stops);
+  assert.equal(lean[1].voice, undefined);
+  assert.equal(lean[1].hasVoice, true);
+  assert.ok(!JSON.stringify(lean).includes('blob'));
+
+  // the bundled tour (a plain array of stops) loads as a lesson file too
+  const tourText = readFileSync(new URL('../samples/sample.lesson.json', import.meta.url), 'utf8');
+  assert.ok(looksLikeLesson(tourText));
+  assert.equal(parseLesson(tourText).stops.length, 7);
+
+  // dumps and data files are not lessons
+  assert.ok(!looksLikeLesson('ITEM: TIMESTEP\n0\n'));
+  assert.ok(!looksLikeLesson('LAMMPS data file\n\n6 atoms\n'));
+  assert.throws(() => parseLesson('{"format":"md-vr-lesson"}'), /no stops/);
+  assert.equal(fmtDur(65.4), '1:05');
+  console.log('lesson file tests passed');
 }

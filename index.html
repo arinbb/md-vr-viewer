@@ -29,7 +29,7 @@
   #updateNote { margin-top: 6px; font-size: 12px; color: var(--accent); }
   #updateNote button { margin-left: 6px; padding: 2px 8px; }
   #sections { overflow-y: auto; display: flex; flex-direction: column; }
-  body.mode-lesson details[data-sec="lesson"] { order: -1; }
+  body.mode-watch details[data-sec="lesson"], body.mode-create details[data-sec="lesson"] { order: -1; }
   #ui.collapsed #statusBox, #ui.collapsed #sections { display: none; }
   details.sec { border-bottom: 1px solid var(--border); flex-shrink: 0; }
   details.sec:last-child { border-bottom: 0; }
@@ -107,7 +107,7 @@
   #bar .speed { font-size: 12px; color: var(--muted); margin: 0; gap: 6px; }
   #bar .speed input { width: 80px; }
   #bar .stops { display: none; }
-  body.mode-lesson #bar.has-stops .stops { display: flex; }
+  body.mode-watch #bar.has-stops .stops, body.mode-create #bar.has-stops .stops { display: flex; }
 
   /* Explore / Lesson switch */
   #modeBox { padding: 8px 12px; border-bottom: 1px solid var(--border); }
@@ -117,9 +117,16 @@
   #modeSeg button.on { background: var(--accent-bg); color: var(--text); }
   #modeSeg button:hover:not(.on) { background: var(--hover); }
   .mode-hint { display: none; margin: 6px 0 0; }
-  body.mode-explore .mode-hint.explore, body.mode-lesson .mode-hint.lesson { display: block; }
+  body.mode-explore .mode-hint.explore, body.mode-watch .mode-hint.watch, body.mode-create .mode-hint.create { display: block; }
   body.mode-explore details[data-sec="lesson"] { display: none; }
   body.mode-explore #caption { display: none !important; }
+  /* Watch plays the lesson and changes nothing; Create holds every editing tool. */
+  body:not(.mode-watch) .w-only, body:not(.mode-create) .c-only { display: none !important; }
+  body:not(.mode-create) #stopList .x { display: none; }
+  #modeSeg #modeCreate.on { background: #5a3d0c; }
+  body.mode-create details[data-sec="lesson"] > summary { color: #f0b429; }
+  #unsavedBadge { background: #5a3d0c; color: #f0b429; }
+  #lessonEditor { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
   #ui.collapsed #modeBox { display: none; }
   #vrBtn, #arBtn { font-weight: 600; white-space: nowrap; }
   #bar:not(.loaded) .needs-traj { opacity: .45; pointer-events: none; }
@@ -167,13 +174,15 @@
   </div>
   <div id="modeBox">
     <div id="modeSeg" role="group" aria-label="Mode">
-      <button id="modeExplore" class="on" aria-pressed="true" title="Look around freely; lesson stops are ignored">Explore</button>
-      <button id="modeLesson" aria-pressed="false" title="Play the lesson: stops set the view, show captions and pause">Lesson<span id="modeLessonN"></span></button>
+      <button id="modeExplore" class="on" aria-pressed="true" title="Look around freely; lessons are switched off">Explore</button>
+      <button id="modeWatch" aria-pressed="false" title="Play the lesson: stops set the view, show captions and play voice clips">Watch<span id="modeWatchN"></span></button>
+      <button id="modeCreate" class="adv" aria-pressed="false" title="Make or edit a lesson: stops never take over while you look for moments">Create</button>
     </div>
-    <p class="hint mode-hint explore">Explore freely: change anything, lesson stops are ignored.
-      <button id="saveMoment" class="adv" style="margin-top:6px" title="Keep this frame, camera, selection and settings as a lesson stop">＋ Save this moment as a lesson stop</button></p>
-    <p class="hint mode-hint lesson">Playing the lesson: each stop sets the view and shows its caption.
-      <span class="adv">Add or edit stops below.</span></p>
+    <p class="hint mode-hint explore">Exploring: change anything. Lessons are switched off here.</p>
+    <p class="hint mode-hint watch">Watching the lesson: each stop sets the view, shows its caption and plays its voice.
+      Nothing here changes the lesson.</p>
+    <p class="hint mode-hint create">Creating a lesson: play or scrub freely to find a moment; stops don't take over.
+      ◀ ▶ or a click in the list loads a stop to edit. Check it in <b>Watch</b>.</p>
   </div>
 
   <div id="sections">
@@ -280,13 +289,15 @@
   </details>
 
   <details class="sec" data-sec="lesson" open>
-    <summary>Lesson <span class="badge" id="stopsBadge"></span></summary>
+    <summary>Lesson <span class="badge" id="stopsBadge"></span> <span class="badge" id="unsavedBadge" hidden title="Changes since the lesson file was last saved or opened">unsaved</span></summary>
     <div class="sec-body">
+      <p class="hint w-only" id="watchEmpty">This file has no lesson. Open a lesson file, or make one in <b>Create</b>.</p>
       <ul id="stopList"></ul>
-      <label class="check small"><input id="pauseAtStops" type="checkbox" checked> Pause at each stop during playback</label>
-      <label class="check small"><input id="waitVoice" type="checkbox" checked> Wait for voice clips to finish, then carry on</label>
-      <details class="sub adv" id="editStops">
-        <summary>Edit stops and share</summary>
+      <div class="w-only">
+        <label class="check small"><input id="pauseAtStops" type="checkbox" checked> Pause at each stop during playback</label>
+        <label class="check small"><input id="waitVoice" type="checkbox" checked> Wait for voice clips to finish, then carry on</label>
+      </div>
+      <div class="c-only adv" id="lessonEditor">
         <p class="hint">A stop ties a caption, the camera and the current settings to a frame.</p>
         <textarea id="stopCaption" placeholder="Caption for this moment, e.g. &quot;Watch this water leave the C=O oxygen&quot;"></textarea>
         <div class="row" style="margin-top:4px">
@@ -308,7 +319,7 @@
           <label class="check small" style="margin:0"><input id="linkStudent" type="checkbox" checked> student mode</label>
         </div>
         <div id="linkInfo" class="small muted"></div>
-      </details>
+      </div>
     </div>
   </details>
 

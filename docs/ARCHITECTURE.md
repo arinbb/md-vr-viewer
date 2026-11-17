@@ -135,16 +135,17 @@ which is what makes them testable without a browser.
 ### 3.1 `index.html`: the page
 
 - **Import map**, which maps `three` and `three/addons/` to pinned CDN URLs.
-- **Side panel** (`#ui`): header, status line (`#statusBox`), the Explore / Lesson switch
+- **Side panel** (`#ui`): header, status line (`#statusBox`), the Explore / Watch / Create switch
   (`#modeBox`), then collapsible `<details class="sec" data-sec=…>` sections: File (with a
   nested *Atom types and elements* table), Appearance, Water & H-bonds, Select & measure
-  (with the plot canvas), Lesson (with a nested *Edit stops and share*), Advanced, and
+  (with the plot canvas), Lesson (stop list; `.w-only` playback options; `.c-only` editor
+  `#lessonEditor`), Advanced, and
   Controls & help. Open/closed state is saved under `md-vr-viewer-sections` in
-  localStorage. In Lesson mode the Lesson section moves to the top (flex `order`). The `–`
+  localStorage. In Watch and Create the Lesson section moves to the top (flex `order`). The `–`
   button collapses the panel. Elements with class `adv` are hidden in student mode
   (`body.student`): File, Advanced and the stop editor.
 - **Playback bar** (`#bar`): step, play, frame slider, frame/time, speed, stop buttons
-  (Lesson mode with stops only), reset, screenshot, and our own Enter AR / Enter VR buttons
+  (Watch and Create, with stops only), reset, screenshot, and our own Enter AR / Enter VR buttons
   (`makeXRButton('ar' | 'vr')` in `main.js`: checks `isSessionSupported`, plain-language
   states such as *No headset* with a tooltip on what to do, re-checks on `devicechange`,
   requests the session and hands it to `renderer.xr.setSession`; while one session runs the
@@ -424,7 +425,11 @@ This only runs when something changed (`S.dirty`: playback, scrubbing or a style
 1. **Interpolate** between frame ⌊f⌋ and ⌊f⌋+1 for smooth playback, unless a coordinate
    jumps by more than half the box (a periodic wrap), which would make atoms fly across
    the box.
-2. **Wrap**: `wrapGroups(cur, groups, box)` (section 6.4).
+2. **Wrap**: `wrapGroups(cur, groups, box)` (section 6.4). In smooth playback `box` is
+   interpolated between the two data frames (`lerpBox`), like the atoms: under NPT the box
+   changes size every frame, and a box that jumped at each data frame while the atoms glide
+   looks like it pulses. Contacts (step 4) use the data frame's own box (`frameBox`). When the
+   box size varies over the run (`boxVaries`), the frame readout shows the current edge.
 3. **Reactive bonds** (optional): re-run `inferBonds` when the integer frame changes.
 4. **Contacts**, only when `contactKey` (data frame, water mode, shell radius, H-bond mode,
    style revision, reactive bond frame) changes: the solvation-shell visibility mask
@@ -635,12 +640,18 @@ section 5.2); see section 5.3 for timings.
 
 A stop is `{ f, cap, sel: [atom-IDs], v: { rep, color, water, shell, hb, arrows, paths }, cam }`.
 
-**Modes.** `S.mode` is `'explore'` or `'lesson'` (`setMode`, which also sets `body.mode-*`
-classes that show or hide the Lesson section, the caption and the stop buttons). In Explore,
-`onFrameChange` returns before any stop logic, so nothing overrides the user. Entering
-Lesson applies the latest stop at or before the current frame (`applyStop(k, {playback:
-true})`, no frame jump). Loading stops (the sample tour or a link) selects Lesson; opening a
-local file after the sample's tour selects Explore; `gotoStop` switches to Lesson.
+**Modes.** `S.mode` is `'explore'`, `'watch'` or `'create'`, changed only by the user through
+`setMode` (and to Watch by opening a lesson). `setMode` sets the `body.mode-*` classes that
+show or hide the Lesson section, the caption, the stop buttons, `.w-only` (playback options)
+and `.c-only` (the editor), stops any clip, and finishes a recording in progress when leaving
+Create. In Explore and Create `onFrameChange` returns before any stop logic, so playback never
+applies stops; in Create it only keeps `S.activeStop` on the stop exactly at this frame
+(`refreshActiveStop`), which is the one *Update stop*, *delete* and the caption box act on.
+Entering Watch applies the latest stop at or before the current frame (`applyStop(k,
+{playback: true})`, no frame jump); entering Create keeps the view. `addStop`, the ✕ in the
+list, *Update stop*, `startVoice` and `deleteStopHere` do nothing outside Create; `gotoStop`
+does nothing in Explore and plays the clip only in Watch. Create is unavailable in student
+mode (`isStudent()`). `voice.unsaved` is a setter that shows the *unsaved* badge.
 `cam` holds the camera position and orbit target in **model coordinates**, so it survives
 a refit or window resize. Stops are kept sorted by frame.
 
@@ -659,7 +670,7 @@ a refit or window resize. Stops are kept sorted by frame.
 - **Recording:** `startVoice()` pauses playback, saves the moment with `captureStop('')`
   (frame, view settings, selection; the camera too on the desktop) and starts the recorder.
   `finishVoice()` attaches the clip to that moment: it replaces the stop at the same frame
-  (keeping its caption) or inserts a new one, switches to Lesson and marks
+  (keeping its caption) or inserts a new one (Create only) and marks
   `voice.unsaved`. The wrist menu's *● hold to talk* starts on `selectstart`
   (`menu.press`) and finishes on `selectend` (`menu.release`), wherever the ray is by
   then. The desktop's *● Record voice* toggles. `buzz()` pulses the controllers'
@@ -667,7 +678,7 @@ a refit or window resize. Stops are kept sorted by frame.
 - **Playback:** `onFrameChange` plays a stop's clip when playback reaches it
   (`playVoice(k, { wait })`: with *Wait for voice clips*, playback pauses and resumes in
   the player's `onEnd`). `gotoStop`, the stop list and *▶ hear stop* play clips too;
-  leaving Lesson mode stops them (`stopVoice`).
+  any mode change stops them (`stopVoice`).
 - **Files:** *Save lesson file* downloads `lessonToJSON(...)`. `classify` recognises lesson
   files (`.json` or `looksLikeLesson`); `loadFiles` applies one after its trajectory
   (`applyLesson`), or on its own to the current trajectory (`openLocal` then leaves the
@@ -692,7 +703,7 @@ stateDiagram-v2
 | **Placement** | On session start, reads the `XRViewerPose` directly from the `XRFrame` (reliable on the first frame) and puts `root` 0.75 m in front of the head along the horizontal look direction, 15 cm below eye level, rotated to face the user. |
 | **Grab (one hand)** | On `squeezestart`, stores `offset = inverse(controller) × root`; each frame sets `root = controller × offset`. The system moves rigidly with the hand. |
 | **Grab (two hands)** | Stores the initial hand distance, the hand-to-hand direction and the root point under the midpoint. Each frame, scale = s₀·d/d₀, rotation = (quaternion turning the old hand-to-hand direction into the new one) × q₀, and the position keeps the same root point under the midpoint. |
-| **Wrist menu** (`menu`) | An 800×980 canvas on a 20×24.5 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Lesson mode the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Lesson segmented switch (narrowed in AR sessions to fit the *room: on/off* passthrough toggle, `MODES_AR`), a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.lesson`), and the voice row in both modes (`VOICE_ROW`: hold to talk, hear stop, delete stop (two presses), wait for voice; recording and deleting are off in student mode). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
+| **Wrist menu** (`menu`) | An 800×980 canvas on a 20×24.5 cm plane, attached to the left grip (or the only controller) and turned toward the head every frame (`faceHead` → `lookAt`). It's rendered double-sided so rays from either side register. Layout: title, status, selection, timeline (with yellow stop ticks), an info panel (in Watch and Create the active stop's caption at the largest of 26/23/20 px that fits, about 250–450 characters; otherwise the measurement plot, which also scrubs), a transport row (step, play, step, reset), the Explore | Watch | Create segmented switch with the detail button (narrower in AR sessions to fit the *room: on/off* passthrough toggle, `MODES_AR`; Watch is disabled without stops, Create in student mode), a 2×4 grid whose buttons depend on the mode (`GRID.explore` / `GRID.watch` / `GRID.create`), and a third row per mode (`ROW3`: none in Explore; hear stop and wait for voice in Watch; hold to talk, hear stop and delete stop (two presses) in Create). The info panel scrubs only while it shows the plot (`infoShowsPlot`). `visibleButtons()` feeds both drawing and `hitTest(uv)`, which maps the ray's UV hit to a button or timeline position; `press()` performs the action. Steppers such as atoms −/+ go through `nudge(id, d)`, which sets the page control and fires its `input` event, so desktop and VR stay in sync. The canvas is redrawn only when a key of the displayed state changes. |
 | **Ray priority** | `updateHover` raycasts the menu first (three.js `Raycaster` against one plane), then atoms. While a ray is on the menu, the trigger never picks atoms behind it. Holding the trigger on the timeline scrubs. |
 | **Gamepad shortcuts** | `pollGamepads` reads `gamepad.buttons` (xr-standard mapping: 0 trigger, 1 squeeze, 2 touchpad press, 3 thumbstick press, 4 A/X, 5 B/Y) and `axes[2..3]` (thumbstick). A/X toggles play; B on the right hand steps one frame forward and Y on the left one back, repeating every 0.125 s after a 0.4 s hold (`h.stepHold`). Controllers without a thumbstick (Vive wands: 3 buttons, 2 axes) use the touchpad `axes[0..1]` while it is touched, and its press for reset. Edges are detected against the previous frame. |
 | **Hand tracking** | Requested as an optional feature (also in safe mode). Each hand gets a skinned model (`XRHandModelFactory`, `'mesh'` profile from the WebXR input-profiles CDN; hidden in AR passthrough) and a dimmer pointing ray. A pinch fires `select` like a trigger: on the menu it presses at once (with `uiClick()`, a short WebAudio click, since hands have no haptics); on atoms the pick waits for `selectend` and is dropped if a fist formed meanwhile (`pendingPick`, `fistDuringPinch`), so grabbing doesn't clear the selection. **Grab** comes from `updateHands()` each frame: `gestures.updateFist` compares each finger's tip-to-knuckle distance with its length along the bones (≈1 straight, ≈0.45 curled; closes when 3 of 4 fingers are below 0.6, opens when 3 are above 0.8), so it works for any hand size and doesn't flicker. A fist adds the hand to `grabbers` like a grip button; the browser's own `squeeze` is ignored for hands. Grabs follow `anchorOf(h)`, the **wrist joint** for hands (steadier than the hand's target ray). **Poke:** the other hand's index-finger tip is moved into the menu's local frame; `gestures.pokePanel` presses when it crosses the surface from the front (z ≤ 8 mm, previously above), hovers within 4 cm, and releases when pulled back past 2 cm or off the panel; hold-to-talk and timeline scrubbing work by poke too. The menu rides on the left **wrist joint** for hands (`placeWristPanel`, re-checked every 30 frames because joints appear after `connected`). `fistOverride` on a hand lets automated tests stand in for a fist. |

@@ -39,7 +39,7 @@ const S = {
   series: null,                  // measurement over time: { values: Float32Array(nf), label, unit }
   stops: [],                     // lesson stops, sorted by frame
   activeStop: -1, lastFrameInt: -1,
-  mode: 'explore',               // 'explore' (free) or 'lesson' (stops fire, captions show)
+  mode: 'explore',               // 'explore' (free), 'watch' (the lesson plays) or 'create' (authoring)
   passthrough: true,             // in an AR session: show the room (false = dark backdrop, like VR)
   detail: 'auto',                // drawing detail: 'auto' | 'high' | 'medium' | 'low' (see setLevel)
   level: 0,                      // the detail in effect: 0 high, 1 medium, 2 low
@@ -91,13 +91,16 @@ const voice = {
       voice.playingStop = null;
       S.voicePlaying = -1;
       // Playback waited for this clip: carry on (unless the user did something else meanwhile).
-      if (voice.resume && S.mode === 'lesson' && !S.playing) setPlaying(true);
+      if (voice.resume && S.mode === 'watch' && !S.playing) setPlaying(true);
       voice.resume = false;
       renderVoiceState();
     },
   }),
   resume: false,      // playback was paused for a clip and continues when it ends
-  unsaved: false,     // clips recorded or deleted since the lesson file was last saved or opened
+  // Lesson changed since the lesson file was last saved or opened (shown as "unsaved").
+  _unsaved: false,
+  get unsaved() { return this._unsaved; },
+  set unsaved(v) { this._unsaved = !!v; const b = document.getElementById('unsavedBadge'); if (b) b.hidden = !v; },
   pending: null,      // the stop being recorded (the moment as it was when recording started)
   busy: false,        // the microphone is being opened
   stopWhenReady: false, // released before recording had started: stop as soon as it does
@@ -497,7 +500,7 @@ async function loadSample() {
           S.stops = (await r.json()).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f);
           S.sampleTour = true;
           renderStops();
-          setMode('lesson');
+          setMode('watch');
           S.lastFrameInt = -1; S.dirty = true; // show the first caption
         }
       } catch { /* the sample still works without its tour */ }
@@ -1003,6 +1006,27 @@ function currentGroups() {
   return S.atomGroups;
 }
 
+/** Box between two data frames (edges and tilts linear in t), reusing one scratch object. */
+const _lbox = { lo: [0, 0, 0], hi: [0, 0, 0], tilt: [0, 0, 0], periodic: [true, true, true] };
+function lerpBox(a, b, t) {
+  for (let d = 0; d < 3; d++) {
+    _lbox.lo[d] = a.lo[d] + t * (b.lo[d] - a.lo[d]);
+    _lbox.hi[d] = a.hi[d] + t * (b.hi[d] - a.hi[d]);
+    _lbox.tilt[d] = a.tilt[d] + t * (b.tilt[d] - a.tilt[d]);
+    _lbox.periodic[d] = a.periodic[d];
+  }
+  return _lbox;
+}
+/** True if the box changes size during the run (e.g. NPT); cached on the trajectory. */
+function boxVaries(traj) {
+  if (traj._boxVaries === undefined) {
+    const b0 = traj.frames[0].box;
+    traj._boxVaries = !!b0 && traj.frames.some((f) => f.box && [0, 1, 2].some((d) =>
+      Math.abs((f.box.hi[d] - f.box.lo[d]) - (b0.hi[d] - b0.lo[d])) > 0.01));
+  }
+  return traj._boxVaries;
+}
+
 function updatePositions() {
   const { traj } = S;
   const nf = traj.frames.length;
@@ -1020,7 +1044,13 @@ function updatePositions() {
   } else {
     cur.set(p0);
   }
-  const box = traj.frames[i0].box;
+  // The data frame's own box (contacts use it, so counts don't depend on playback), and the box
+  // for display: in smooth playback it is interpolated like the atoms. Under NPT the box changes
+  // size every frame; without this it would jump at each data frame while the atoms glide,
+  // and seem to pulse.
+  const frameBox = traj.frames[i0].box;
+  const box = t > 1e-4 && i0 + 1 < nf && frameBox && traj.frames[i0 + 1].box
+    ? lerpBox(frameBox, traj.frames[i0 + 1].box, t) : frameBox;
   if (S.wrap && box) wrapGroups(cur, currentGroups(), box);
 
   if (S.dynBonds && i0 !== S.lastBondFrame) {
@@ -1042,7 +1072,7 @@ function updatePositions() {
     if (S.waterMode === 'near' && S.waterIdx.length && S.soluteIdx.length) {
       // The data frame's own positions (not the in-between ones of smooth playback), so the shell
       // is the same however you arrive at a frame. Periodic: contacts across the box edge count.
-      const near = nearMask(traj.frames[i0].pos, S.soluteIdx, S.waterIdx, S.shellR, traj.n, box);
+      const near = nearMask(traj.frames[i0].pos, S.soluteIdx, S.waterIdx, S.shellR, traj.n, frameBox);
       const g = S.groups.group;
       const keepGroup = new Uint8Array(S.groups.count);
       for (const i of S.waterIdx) if (near[i]) keepGroup[g[i]] = 1;
@@ -1099,7 +1129,7 @@ function updatePositions() {
     bondMesh.instanceMatrix.needsUpdate = true;
   }
 
-  updateHBonds(cur, newContacts, box, traj.frames[i0].pos);
+  updateHBonds(cur, newContacts, frameBox, traj.frames[i0].pos);
   updateArrows(cur, i0);
 
   // Box.
@@ -1117,7 +1147,9 @@ function updatePositions() {
   const fr = traj.frames[i0];
   $('frame').value = String(i0);
   const tm = simTime(fr.timestep);
-  $('frameInfo').textContent = `frame ${i0 + 1} / ${nf} · timestep ${fr.timestep.toLocaleString()}${tm ? ` · t = ${tm}` : ''}`;
+  // Box size, when it changes over the run (NPT), so its breathing reads as physics, not a glitch.
+  const boxText = box && boxVaries(traj) ? ` · box ${(box.hi[0] - box.lo[0]).toFixed(1)} Å` : '';
+  $('frameInfo').textContent = `frame ${i0 + 1} / ${nf} · timestep ${fr.timestep.toLocaleString()}${tm ? ` · t = ${tm}` : ''}${boxText}`;
   if (i0 !== S.lastFrameInt) onFrameChange(i0);
 }
 
@@ -1125,7 +1157,12 @@ function updatePositions() {
 function onFrameChange(i0) {
   const prev = S.lastFrameInt;
   S.lastFrameInt = i0;
-  if (S.mode !== 'lesson') { S.looped = false; drawPlot(); return; } // exploring: stops stay out of the way
+  if (S.mode !== 'watch') { // exploring or creating: stops never take over the view
+    S.looped = false;
+    if (S.mode === 'create') refreshActiveStop();
+    drawPlot();
+    return;
+  }
   // Playing forward past a stop: apply it (and pause, if asked).
   const looped = S.looped;
   S.looped = false;
@@ -1767,28 +1804,41 @@ function applyStop(k, { playback = false } = {}) {
   S.dirty = true;
 }
 
-/** Active stop = the latest at or before the frame shown (Lesson mode), after stops changed. */
+/**
+ * The active stop for the frame shown: in Watch the latest stop at or before it (its caption
+ * stays up until the next stop); in Create only a stop exactly on this frame (the one you would
+ * edit); in Explore none.
+ */
 function refreshActiveStop() {
-  if (S.mode !== 'lesson' || !S.traj) { setActiveStop(-1); return; }
+  if (S.mode === 'explore' || !S.traj) { setActiveStop(-1); return; }
   const f = Math.floor(S.frameF);
   let a = -1;
-  for (let k = 0; k < S.stops.length; k++) if (S.stops[k].f <= f) a = k;
-  setActiveStop(a);
+  if (S.mode === 'create') a = S.stops.findIndex((st) => st.f === f);
+  else for (let k = 0; k < S.stops.length; k++) if (S.stops[k].f <= f) a = k;
+  if (a !== S.activeStop) setActiveStop(a);
 }
 
+let editedStop = null; // the stop object the caption box shows (Create)
 function setActiveStop(k) {
   S.activeStop = k;
   const st = S.stops[k];
+  const changed = (st || null) !== editedStop;
+  editedStop = st || null;
   const cap = $('caption');
-  if (st && (st.cap || st.voice)) {
+  if (st && (st.cap || st.voice || S.mode === 'create')) {
     const v = st.voice ? ` · voice ${fmtDur(st.voice.dur)}` : '';
-    cap.innerHTML = `<span class="n">Stop ${k + 1} of ${S.stops.length}${v}</span>${st.cap ? esc(st.cap) : '<i>Voice note</i>'}`;
+    const head = S.mode === 'create' ? `Editing stop ${k + 1} of ${S.stops.length}` : `Stop ${k + 1} of ${S.stops.length}`;
+    const body = st.cap ? esc(st.cap) : st.voice ? '<i>Voice note</i>' : '<i>No caption yet</i>';
+    cap.innerHTML = `<span class="n">${head}${v}</span>${body}`;
     cap.classList.add('show');
   } else {
     cap.classList.remove('show');
   }
   [...$('stopList').children].forEach((li, j) => li.classList.toggle('active', j === k));
   $('updateStop').disabled = k < 0;
+  $('addStop').textContent = k >= 0 && S.mode === 'create' ? 'Add another stop here' : 'Add stop here';
+  // Creating: the caption box follows the stop being edited.
+  if (S.mode === 'create' && changed) $('stopCaption').value = st ? st.cap || '' : '';
 }
 
 function renderStops() {
@@ -1800,51 +1850,58 @@ function renderStops() {
   setActiveStop(Math.min(S.activeStop, S.stops.length - 1));
   $('stopsBadge').textContent = S.stops.length ? `${S.stops.length} stop${S.stops.length === 1 ? '' : 's'}` : '';
   $('bar').classList.toggle('has-stops', S.stops.length > 0);
-  $('modeLessonN').textContent = S.stops.length ? ` (${S.stops.length})` : '';
+  $('modeWatchN').textContent = S.stops.length ? ` (${S.stops.length})` : '';
+  $('modeWatch').disabled = !S.stops.length;
+  $('modeWatch').title = S.stops.length ? 'Play the lesson: stops set the view, show captions and play voice clips'
+    : 'No lesson yet: open a lesson file, or make one in Create';
+  $('watchEmpty').hidden = S.stops.length > 0;
   drawPlot();
 }
 
+const MODE_NAMES = ['explore', 'watch', 'create'];
+const isStudent = () => document.body.classList.contains('student');
 /**
- * Explore: everything is free and stops never fire. Lesson: playback applies stops (settings,
- * camera, caption) and can pause at them; stops are authored here too. Switching back to Lesson
- * restores the stop for the current frame, so a student who wandered off is put back on track.
+ * Three deliberate modes, changed only by the user (or by opening a lesson, which opens in Watch):
+ * - Explore: free; stops never fire, no captions, no lesson tools.
+ * - Watch: the lesson plays; stops set the view, show captions, play voice and can pause. Nothing
+ *   here edits the lesson. Entering Watch restores the stop for the current frame, so a student
+ *   who wandered off in Explore is put back on track.
+ * - Create: authoring. Playback and scrubbing are free (stops never take over); going to a stop
+ *   loads it for editing; adding, updating, deleting, recording and saving live here only.
+ *   Not available in student mode.
  */
 function setMode(mode, { restore = true } = {}) {
-  S.mode = mode === 'lesson' ? 'lesson' : 'explore';
-  document.body.classList.toggle('mode-lesson', S.mode === 'lesson');
-  document.body.classList.toggle('mode-explore', S.mode === 'explore');
-  $('modeExplore').classList.toggle('on', S.mode === 'explore');
-  $('modeLesson').classList.toggle('on', S.mode === 'lesson');
-  $('modeExplore').setAttribute('aria-pressed', String(S.mode === 'explore'));
-  $('modeLesson').setAttribute('aria-pressed', String(S.mode === 'lesson'));
-  if (S.mode === 'explore') { setActiveStop(-1); stopVoice(); }
+  if (!MODE_NAMES.includes(mode)) mode = 'explore';
+  if (mode === 'create' && isStudent()) mode = 'watch';
+  if (mode === S.mode && document.body.classList.contains(`mode-${mode}`)) return;
+  if (S.mode === 'create' && (voice.rec.recording || voice.busy)) finishVoice(); // keep a clip in progress
+  stopVoice();
+  S.mode = mode;
+  for (const m of MODE_NAMES) {
+    document.body.classList.toggle(`mode-${m}`, S.mode === m);
+    const b = $(`mode${m[0].toUpperCase()}${m.slice(1)}`);
+    b.classList.toggle('on', S.mode === m);
+    b.setAttribute('aria-pressed', String(S.mode === m));
+  }
+  S.activeStop = -2; // forces the caption and stop list to refresh for the new mode
+  if (S.mode === 'explore') setActiveStop(-1);
   else {
     const sec = document.querySelector('details[data-sec="lesson"]');
     if (sec) sec.open = true;
-    if (!S.stops.length) { const ed = $('editStops'); if (ed) ed.open = true; }
-    if (restore && S.traj && S.stops.length) {
-      const f = Math.floor(S.frameF);
-      let k = -1;
-      for (let j = 0; j < S.stops.length; j++) if (S.stops[j].f <= f) k = j;
-      if (k >= 0) applyStop(k, { playback: true }); else setActiveStop(-1);
-    }
+    const f = Math.floor(S.frameF);
+    let k = -1;
+    for (let j = 0; j < S.stops.length; j++) if (S.stops[j].f <= f) k = j;
+    if (S.mode === 'watch' && restore && S.traj && k >= 0) applyStop(k, { playback: true });
+    else refreshActiveStop();
   }
   S.dirty = true;
 }
 $('modeExplore').onclick = () => setMode('explore');
-// Found a good moment while exploring: switch to Lesson without disturbing the view, and get the
-// caption box ready (Add stop here saves it).
-$('saveMoment').onclick = () => {
-  if (!S.traj) return;
-  setPlaying(false);
-  setMode('lesson', { restore: false });
-  $('editStops').open = true;
-  $('stopCaption').focus();
-  $('linkInfo').textContent = 'Type a caption, then click Add stop here.';
-};
-$('modeLesson').onclick = () => setMode('lesson');
+$('modeWatch').onclick = () => setMode('watch');
+$('modeCreate').onclick = () => setMode('create');
 
 function addStop(st) {
+  if (S.mode !== 'create') return;
   S.sampleTour = false; // edited stops are the user's own lesson now
   voice.unsaved = true;
   S.stops.push(st);
@@ -1858,6 +1915,7 @@ $('stopList').addEventListener('click', (e) => {
   if (!li) return;
   const k = +li.dataset.k;
   if (e.target.classList.contains('x')) {
+    if (S.mode !== 'create') return;
     if (!confirm(`Delete stop ${k + 1}${S.stops[k].cap ? ` ("${S.stops[k].cap.slice(0, 40)}")` : ''}${S.stops[k].voice ? ' and its voice clip' : ''}?`)) return;
     voice.unsaved = true;
     stopVoice();
@@ -1871,17 +1929,15 @@ $('stopList').addEventListener('click', (e) => {
     return;
   }
   applyStop(k);
-  playVoice(k);
-  $('stopCaption').value = S.stops[k].cap || '';
+  if (S.mode === 'watch') playVoice(k); // creating: silent; ▶ in the row plays it
 });
 $('addStop').onclick = () => {
-  if (!S.traj) return;
-  addStop(captureStop($('stopCaption').value.trim()));
-  $('stopCaption').value = '';
+  if (!S.traj || S.mode !== 'create') return;
+  addStop(captureStop($('stopCaption').value.trim())); // the box now shows the new stop's caption
 };
 $('updateStop').onclick = () => {
   const k = S.activeStop;
-  if (k < 0 || !S.traj) return;
+  if (k < 0 || !S.traj || S.mode !== 'create') return;
   const old = S.stops.splice(k, 1)[0];
   // An empty caption box keeps the stop's caption (the box is cleared after Add stop).
   const st = captureStop($('stopCaption').value.trim() || old.cap || '');
@@ -1889,8 +1945,7 @@ $('updateStop').onclick = () => {
   addStop(st);
 };
 function gotoStop(dir) {
-  if (!S.stops.length || !S.traj) return;
-  if (S.mode !== 'lesson') setMode('lesson', { restore: false });
+  if (!S.stops.length || !S.traj || S.mode === 'explore') return; // Explore has no lesson
   const f = Math.floor(S.frameF);
   let k;
   if (dir > 0) {
@@ -1904,7 +1959,7 @@ function gotoStop(dir) {
     if (k < 0) k = S.stops.length - 1;
   }
   applyStop(k);
-  playVoice(k);
+  if (S.mode === 'watch') playVoice(k);
 }
 $('prevStop').onclick = () => gotoStop(-1);
 $('nextStop').onclick = () => gotoStop(1);
@@ -1974,7 +2029,7 @@ function stopIndexHere() {
   if (!S.traj) return -1;
   const f = Math.floor(S.frameF);
   const k = S.stops.findIndex((st) => st.f === f);
-  return k >= 0 ? k : S.mode === 'lesson' ? S.activeStop : -1;
+  return k >= 0 ? k : S.mode === 'watch' ? S.activeStop : -1; // Create: only a stop on this frame
 }
 function voiceMsg(text) {
   $('voiceInfo').textContent = text;
@@ -1999,6 +2054,7 @@ function renderVoiceState() {
 /** Starts recording. The moment (frame, view, selection) is saved now, the clip when you stop. */
 async function startVoice() {
   if (!S.traj || voice.rec.recording || voice.busy) return;
+  if (S.mode !== 'create') { voiceMsg('Switch to Create to record.'); return; }
   if (!voice.rec.supported) { voiceMsg('This browser cannot record audio.'); return; }
   voice.busy = true;
   setPlaying(false);
@@ -2044,7 +2100,6 @@ async function finishVoice(autoClip, prefix = '') {
   }
   S.sampleTour = false; // it's the user's own lesson now
   voice.unsaved = true;
-  if (S.mode !== 'lesson') setMode('lesson', { restore: false });
   renderStops();
   setActiveStop(S.stops.indexOf(target));
   voiceMsg(`${prefix}Voice clip on stop ${S.stops.indexOf(target) + 1} (${fmtDur(clip.dur)}). Save the lesson file to keep it.`);
@@ -2052,7 +2107,7 @@ async function finishVoice(autoClip, prefix = '') {
 /** Plays stop k's clip. wait: pause playback until it ends, then carry on. */
 function playVoice(k, { wait = false } = {}) {
   const st = S.stops[k];
-  if (!st || !st.voice || voice.rec.recording || S.mode !== 'lesson') return;
+  if (!st || !st.voice || voice.rec.recording || S.mode === 'explore') return;
   if (!voice.player.play(k, st.voice)) return;
   S.voicePlaying = k;
   voice.playingStop = st;
@@ -2069,6 +2124,7 @@ function stopVoice() {
 }
 /** VR: delete the stop here; the first press arms it, a second press within 3 s deletes. */
 function deleteStopHere() {
+  if (S.mode !== 'create') return;
   // The second press deletes the stop the first press announced, even if playback moved on.
   const armed = performance.now() - voice.deleteArmed <= 3000 && S.stops.includes(voice.deleteTarget);
   if (!armed) {
@@ -2100,7 +2156,7 @@ function applyLesson(lesson, name) {
   source.lesson = null; // set again by lessonFromLink when it came from a link
   if (lesson.meta.fs && !S.fsPerStep) { S.fsPerStep = +lesson.meta.fs || 0; $('fsPerStep').value = String(S.fsPerStep || ''); }
   renderStops();
-  setMode('lesson');
+  setMode('watch');
   S.lastFrameInt = -1; S.dirty = true; // show the caption for this frame
   const other = lesson.meta.trajectory && S.name && lesson.meta.trajectory !== S.name ? ` It was made for ${lesson.meta.trajectory}.` : '';
   const msg = `Lesson ${name}: ${lesson.stops.length} stops, ${lesson.clips} voice clip${lesson.clips === 1 ? '' : 's'}.${other}`;
@@ -2412,7 +2468,7 @@ function pollGamepads(dt) {
       // Up/down: next/previous lesson stop if there are any, else cycle the water display.
       const flickY = ay > 0.7 ? 1 : ay < -0.7 ? -1 : 0;
       if (flickY && !h.flicked && S.traj) {
-        if (S.stops.length && S.mode === 'lesson') gotoStop(-flickY); // stick up (negative y) = next
+        if (S.stops.length && S.mode !== 'explore') gotoStop(-flickY); // stick up (negative y) = next
         else { const M = waterModes(); setWater(M[(M.indexOf(S.waterMode) + 1) % M.length]); }
       }
       h.flicked = flick !== 0 || flickY !== 0;
@@ -2443,38 +2499,47 @@ const menu = (() => {
   const TRANSPORT = [['back', () => '◀  step'], ['play', () => (S.playing ? '❚❚  pause' : '▶  play')],
     ['fwd', () => 'step  ▶'], ['reset', () => 'reset view']]
     .map(([id, label], k) => ({ id, label, ...ROW(k), y: 456, h: 80 }));
-  const MODES = [['modeExplore', () => 'Explore'], ['modeLesson', () => `Lesson${S.stops.length ? ` (${S.stops.length})` : ''}`]]
-    .map(([id, label], k) => ({ id, label, x: 30 + k * 270, w: 270, y: 548, h: 56, seg: true }));
+  const MODES = [['modeExplore', () => 'Explore'], ['modeWatch', () => `Watch${S.stops.length ? ` (${S.stops.length})` : ''}`],
+    ['modeCreate', () => 'Create']]
+    .map(([id, label], k) => ({ id, label, x: 30 + k * 182, w: 182, y: 548, h: 56, seg: true }));
   // The mode switch shares its row with the detail button (and, in AR, the passthrough toggle).
   const SHORT = ['high', 'med', 'low'];
   const detailLabel = () => (S.detail === 'auto' ? `auto: ${SHORT[S.level]}` : `detail: ${SHORT[S.level]}`);
   const MODES_VR = [...MODES, { id: 'detail', label: detailLabel, x: 582, w: 188, y: 548, h: 56 }];
-  const MODES_AR = [...MODES.map((b, k) => ({ ...b, x: 30 + k * 215, w: 215 })),
-    { id: 'detail', label: detailLabel, x: 472, w: 146, y: 548, h: 56 },
-    { id: 'passthrough', label: () => (S.passthrough ? 'room: on' : 'room: off'), x: 624, w: 146, y: 548, h: 56 }];
+  const MODES_AR = [...MODES.map((b, k) => ({ ...b, x: 30 + k * 148, w: 148 })),
+    { id: 'detail', label: detailLabel, x: 478, w: 142, y: 548, h: 56 },
+    { id: 'passthrough', label: () => (S.passthrough ? 'room: on' : 'room: off'), x: 626, w: 144, y: 548, h: 56 }];
   const GRID = {
     explore: [['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
       ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]],
       ['paths', () => (S.showPaths ? 'paths: on' : 'paths: off')],
       ['arrows', () => (S.arrows ? `arrows: ${S.arrows}` : 'arrows: off')],
       ['smaller', () => 'atoms −'], ['bigger', () => 'atoms +']],
-    lesson: [['prevStop', () => '◀  stop'], ['nextStop', () => 'stop  ▶'], ['firstStop', () => '⏮  restart'],
+    watch: [['prevStop', () => '◀  stop'], ['nextStop', () => 'stop  ▶'], ['firstStop', () => '⏮  restart'],
       ['pauseStops', () => ($('pauseAtStops').checked ? 'pause at stops' : 'no pausing')],
+      ['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
+      ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]]],
+    create: [['prevStop', () => '◀  stop'], ['nextStop', () => 'stop  ▶'],
+      ['addStop', () => '＋ add stop'], ['updStop', () => '⟳ update stop'],
       ['style', () => REP_NAMES[S.rep]], ['color', () => `by ${colorName(S.colorBy)}`],
       ['water', () => WATER_LABEL[S.waterMode]], ['hb', () => HB_LABEL[S.hbonds]]],
   };
   const grid = (mode) => GRID[mode].map(([id, label], k) =>
     ({ id, label, ...ROW(k), y: 616 + Math.floor(k / 4) * 96, h: 84 }));
-  const GRIDS = { explore: grid('explore'), lesson: grid('lesson') };
-  // Third row, both modes: voice clips. Hold "talk" to record onto the stop at this frame.
-  const VOICE_ROW = [
-    ['rec', () => (voice.rec.recording ? `■ ${fmtDur(S.recTick)} release` : '● hold to talk')],
-    ['hear', () => (S.voicePlaying >= 0 ? '■ stop voice' : '▶ hear stop')],
-    ['delStop', () => (voice.deleteArmed ? 'press again' : '✕ delete stop')],
-    ['waitVoice', () => ($('waitVoice').checked ? 'wait for voice' : "don't wait")],
-  ].map(([id, label], k) => ({ id, label, ...ROW(k), y: 808, h: 84 }));
+  const GRIDS = { explore: grid('explore'), watch: grid('watch'), create: grid('create') };
+  // Third row: voice. Watch hears clips; Create records them (hold "talk" while speaking) and
+  // deletes stops. Explore has no lesson tools.
+  const HEAR = ['hear', () => (S.voicePlaying >= 0 ? '■ stop voice' : '▶ hear stop')];
+  const row3 = (items) => items.map(([id, label], k) => ({ id, label, ...ROW(k), y: 808, h: 84 }));
+  const ROW3 = {
+    explore: [],
+    watch: row3([HEAR, ['waitVoice', () => ($('waitVoice').checked ? 'wait for voice' : "don't wait")]]),
+    create: row3([['rec', () => (voice.rec.recording ? `■ ${fmtDur(S.recTick)} release` : '● hold to talk')], HEAR,
+      ['delStop', () => (voice.deleteArmed ? 'press again' : '✕ delete stop')]]),
+  };
   const student = () => document.body.classList.contains('student');
-  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES_VR), ...GRIDS[S.mode], ...VOICE_ROW];
+  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES_VR), ...GRIDS[S.mode], ...ROW3[S.mode]];
+  let infoShowsPlot = false; // the info panel currently shows the measurement plot (it scrubs)
   /** Sets a page control and fires its handler, so desktop and VR stay in sync. */
   const nudge = (id, d) => {
     const el = $(id);
@@ -2482,11 +2547,15 @@ const menu = (() => {
     el.dispatchEvent(new Event('input'));
   };
   const enabled = (id) => {
-    if (id === 'reset' || id === 'modeExplore' || id === 'modeLesson' || id === 'passthrough' || id === 'detail' || id === 'waitVoice') return true;
+    if (id === 'reset' || id === 'modeExplore' || id === 'passthrough' || id === 'detail' || id === 'waitVoice') return true;
+    if (id === 'modeWatch') return S.stops.length > 0;
+    if (id === 'modeCreate') return !student();
     if (!S.traj) return false;
-    if (id === 'rec') return voice.rec.supported && !student();
+    if (id === 'rec') return voice.rec.supported && S.mode === 'create';
+    if (id === 'addStop') return S.mode === 'create' && !S.stops.some((st) => st.f === Math.floor(S.frameF));
+    if (id === 'updStop') return S.mode === 'create' && stopIndexHere() >= 0;
     if (id === 'hear') { const k = stopIndexHere(); return S.voicePlaying >= 0 || (k >= 0 && !!S.stops[k].voice); }
-    if (id === 'delStop') return !student() && stopIndexHere() >= 0;
+    if (id === 'delStop') return S.mode === 'create' && stopIndexHere() >= 0;
     if (id === 'water') return !$('water').disabled;
     if (id === 'hb') return !$('hbonds').disabled;
     if (id === 'arrows') return S.families.length > 0;
@@ -2503,7 +2572,7 @@ const menu = (() => {
     if (y >= TL.y - 16 && y <= TL.y + TL.h + 16 && x >= TL.x - 12 && x <= TL.x + TL.w + 12) {
       return { id: 'timeline', frac: THREE.MathUtils.clamp((x - TL.x) / TL.w, 0, 1) };
     }
-    if (S.series && S.mode === 'explore' && y >= INFO.y && y <= INFO.y + INFO.h && x >= INFO.x && x <= INFO.x + INFO.w) {
+    if (infoShowsPlot && y >= INFO.y && y <= INFO.y + INFO.h && x >= INFO.x && x <= INFO.x + INFO.w) {
       return { id: 'timeline', frac: THREE.MathUtils.clamp((x - INFO.x) / INFO.w, 0, 1) }; // the plot scrubs too
     }
     for (const b of visibleButtons()) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return { id: b.id };
@@ -2513,7 +2582,8 @@ const menu = (() => {
   function press(hit) {
     if (hit.id === 'reset') { resetView(); return; }
     if (hit.id === 'modeExplore') { setMode('explore'); return; }
-    if (hit.id === 'modeLesson') { setMode('lesson'); return; }
+    if (hit.id === 'modeWatch') { if (enabled('modeWatch')) setMode('watch'); return; }
+    if (hit.id === 'modeCreate') { if (enabled('modeCreate')) setMode('create'); return; }
     if (hit.id === 'passthrough') { setPassthrough(!S.passthrough); return; }
     if (hit.id === 'waitVoice') { $('waitVoice').checked = !$('waitVoice').checked; return; }
     if (hit.id === 'detail') { setDetail(DETAILS[(DETAILS.indexOf(S.detail) + 1) % DETAILS.length]); vrNote(''); return; }
@@ -2537,7 +2607,16 @@ const menu = (() => {
       case 'nextStop': gotoStop(1); break;
       case 'firstStop': applyStop(0); playVoice(0); break;
       case 'rec': startVoice(); break;
-      case 'hear': if (S.voicePlaying >= 0) stopVoice(); else { if (S.mode !== 'lesson') setMode('lesson', { restore: false }); playVoice(stopIndexHere()); } break;
+      case 'hear': if (S.voicePlaying >= 0) stopVoice(); else playVoice(stopIndexHere()); break;
+      case 'addStop': addStop(captureStop('')); vrNote(`Stop ${S.activeStop + 1} added at frame ${Math.floor(S.frameF) + 1}: hold to talk to give it a voice`); break;
+      case 'updStop': {
+        const k = stopIndexHere(), old = S.stops[k];
+        const st = captureStop(old.cap || '');
+        if (old.voice) st.voice = old.voice;
+        S.stops.splice(k, 1); addStop(st);
+        vrNote(`Stop ${S.activeStop + 1} updated to this view`);
+        break;
+      }
       case 'delStop': deleteStopHere(); break;
       case 'pauseStops': $('pauseAtStops').checked = !$('pauseAtStops').checked; break;
       case 'smaller': nudge('atomScale', -0.1); break;
@@ -2611,13 +2690,15 @@ const menu = (() => {
     ctx.beginPath(); ctx.arc(headX, TL.y + TL.h / 2, tHover ? 20 : 16, 0, Math.PI * 2); ctx.fill();
 
     // Info area: lesson caption takes priority, then the measurement plot, then a hint.
-    if (S.mode === 'lesson' && stop && (stop.cap || stop.voice)) {
+    infoShowsPlot = false;
+    if (S.mode !== 'explore' && stop && (stop.cap || stop.voice || S.mode === 'create')) {
       ctx.fillStyle = '#10243d';
       ctx.beginPath(); ctx.roundRect(INFO.x, INFO.y, INFO.w, INFO.h, 14); ctx.fill();
       ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = '#8b949e'; ctx.font = '20px system-ui, sans-serif';
-      ctx.fillText(`stop ${S.activeStop + 1} of ${S.stops.length}${stop.voice ? ` · voice ${fmtDur(stop.voice.dur)}` : ''}`, INFO.x + 16, INFO.y + 26);
-      const capText = stop.cap || (S.voicePlaying === S.activeStop ? 'Playing the voice note…' : 'Voice note: press ▶ hear stop to listen.');
+      ctx.fillText(`${S.mode === 'create' ? 'editing stop' : 'stop'} ${S.activeStop + 1} of ${S.stops.length}${stop.voice ? ` · voice ${fmtDur(stop.voice.dur)}` : ''}`, INFO.x + 16, INFO.y + 26);
+      const capText = stop.cap || (S.voicePlaying === S.activeStop ? 'Playing the voice note…'
+        : stop.voice ? 'Voice note: press ▶ hear stop to listen.' : 'No caption or voice yet: hold to talk to record one.');
       ctx.fillStyle = '#e6edf3';
       // Largest font at which the whole caption fits (5-7 lines); the last size clips if it must.
       for (const [px, lh] of [[26, 31], [23, 27], [20, 24]]) {
@@ -2630,11 +2711,13 @@ const menu = (() => {
         }
       }
     } else if (S.series) {
+      infoShowsPlot = true;
       plotSeries(ctx, INFO.x, INFO.y, INFO.w, INFO.h, true);
     } else {
       ctx.fillStyle = '#8b949e'; ctx.font = '22px system-ui, sans-serif';
-      const hint = !S.traj ? '' : S.mode === 'lesson'
-        ? (S.stops.length ? 'press stop ▶ or play to start the lesson' : 'this file has no lesson stops: switch to Explore')
+      const hint = !S.traj ? '' : S.mode === 'watch'
+        ? (S.stops.length ? 'press stop ▶ or play to start the lesson' : 'no lesson in this file: use Explore or Create')
+        : S.mode === 'create' ? 'creating: find a moment, then ＋ add stop or hold to talk'
         : S.hbonds !== 'off' ? `${S.hbCount || 0} hydrogen bonds shown` : 'trigger 2–4 atoms to plot a distance or angle over time';
       ctx.fillText(clip(ctx, hint, INFO.w - 20), INFO.x + 4, INFO.y + 60);
     }
@@ -2649,8 +2732,10 @@ const menu = (() => {
         (b.id === 'paths' && S.showPaths) || (b.id === 'hb' && S.hbonds !== 'off') || (b.id === 'arrows' && !!S.arrows) ||
         (b.id === 'pauseStops' && $('pauseAtStops').checked) || (b.id === 'passthrough' && S.passthrough) ||
         (b.id === 'waitVoice' && $('waitVoice').checked) || (b.id === 'hear' && S.voicePlaying >= 0) ||
-        (b.id === 'modeExplore' && S.mode === 'explore') || (b.id === 'modeLesson' && S.mode === 'lesson');
+        (b.id === 'modeExplore' && S.mode === 'explore') || (b.id === 'modeWatch' && S.mode === 'watch') ||
+        (b.id === 'modeCreate' && S.mode === 'create');
       ctx.fillStyle = b.id === 'rec' && voice.rec.recording ? '#a40e26'
+        : b.id === 'modeCreate' && S.mode === 'create' ? '#5a3d0c'
         : hv ? '#1f6feb' : active ? (b.seg ? '#2b5a91' : '#1c3a5e') : (b.seg ? '#161b22' : '#21262d');
       ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, b.seg ? 12 : 16); ctx.fill();
       ctx.strokeStyle = hv ? '#58a6ff' : '#30363d'; ctx.lineWidth = 2; ctx.stroke();
@@ -2831,7 +2916,7 @@ async function loadFromParams() {
   if (params.get('fs')) { S.fsPerStep = +params.get('fs') || 0; $('fsPerStep').value = params.get('fs'); }
   if (params.get('shell')) { S.shellR = THREE.MathUtils.clamp(+params.get('shell') || 4, 1, 15); $('shellR').value = String(S.shellR); }
   if (params.get('stops')) {
-    try { S.stops = b64dec(params.get('stops')).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f); renderStops(); setMode('lesson'); }
+    try { S.stops = b64dec(params.get('stops')).filter((s) => Number.isInteger(s.f)).sort((a, b) => a.f - b.f); renderStops(); setMode('watch'); }
     catch { setStatus('Could not read the lesson stops in this link.'); }
   }
   const applyViewParams = () => {

@@ -243,6 +243,10 @@ Auto never raises the detail by itself during a session; use the menu's *detail*
   the plot on the wrist menu works as a timeline too).
 - **Find atom-ID:** type an ID from a LAMMPS input or log to jump to that atom.
 - **Simulated time:** enter the timestep size (fs) to show t = … ps/ns next to the frame.
+- **Box size:** for runs where the box changes (NPT), the frame readout shows the current
+  edge length, e.g. *box 44.3 Å*. The box outline really does breathe in such runs (it
+  shrinks about 10% while the sample equilibrates); in smooth playback it changes gradually
+  between saved frames, like the atoms.
 - **Screenshot** button (or <kbd>P</kbd>) saves the current view as a PNG for slides
   or handouts.
 - Display settings (style, colors, sizes, speed, timestep size) are remembered per browser.
@@ -250,39 +254,48 @@ Auto never raises the detail by itself during a session; use the menu's *detail*
 ## The screen
 
 - **Side panel** (top left, ▾/▸ to fold any section; folding is remembered): the status line,
-  the **Explore / Lesson** switch, then *File* (open, stride, atom types), *Appearance*,
+  the **Explore | Watch | Create** switch, then *File* (open, stride, atom types), *Appearance*,
   *Water & H-bonds*, *Select & measure*, *Lesson*, *Advanced* and *Controls & help*. The
   File section folds itself away after a file loads, unless atom types need checking.
   The – button hides the whole panel; on a phone it folds itself after loading.
 - **Playback bar** (bottom, like a video player): step, play, the frame slider, frame and
-  time, speed, previous/next lesson stop (Lesson mode), reset view, screenshot,
+  time, speed, previous/next lesson stop (Watch and Create), reset view, screenshot,
   **Enter AR** (passthrough headsets only) and **Enter VR**.
 
-### Two modes: Explore and Lesson
+### Three modes: Explore, Watch, Create
 
-- **Explore** is free use. Change anything, play, measure; lesson stops never fire and no
-  caption is shown. Files without stops open in Explore.
-- **Lesson** plays the stops: when playback reaches one, it sets the view and settings and
-  shows its caption (and pauses, if *Pause at each stop* is on). Stops are authored in this
-  mode too. The sample and share links with stops open in Lesson.
-- Found a good moment while exploring? **＋ Save this moment as a lesson stop** switches
-  to Lesson without touching the view and opens the caption box.
-- Switching back to Lesson restores the stop for the current frame, so a student who
-  wandered off in Explore is put back on track. <kbd>N</kbd>/<kbd>B</kbd> (or the stop
-  buttons) switch to Lesson automatically.
-- The same switch is on the VR wrist menu, and the menu's buttons follow the mode.
+You are always in exactly one mode, chosen with the switch at the top of the panel (and on
+the VR wrist menu). Nothing changes the mode for you, except opening a lesson (the sample,
+a lesson file or a link with stops), which opens in **Watch**.
+
+| | **Explore** | **Watch** (a lesson) | **Create** (a lesson) |
+|---|---|---|---|
+| What it's for | Looking around freely | Following a lesson | Making or editing one |
+| Playing past a stop | Nothing happens | The stop sets the view, shows its caption, plays its voice, and can pause | Nothing happens: play and scrub freely to find moments |
+| ⏮ ⏭, the stop list, <kbd>N</kbd>/<kbd>B</kbd> | Not available | Jump to a stop and play it | Jump to a stop and load it for editing |
+| Captions | Hidden | The latest stop's | The stop on this exact frame, as *Editing stop …* |
+| Add, update, delete stops; record voice; save the file | No | No | Yes |
+| In student mode | Yes | Yes | Hidden |
+
+- **Watch** restores the stop for the current frame when you switch to it, so a student who
+  wandered off in Explore is put back on track. It is greyed out when there is no lesson.
+- **Create** keeps the view when you switch to it, so the moment you found while exploring
+  is still there to save. Its switch button and the Lesson heading turn amber, and
+  *unsaved* appears next to the heading until you save the lesson file.
+- In VR, the wrist menu's buttons change with the mode (see *Controls*).
 
 ## Lessons (narration over time)
 
 A **stop** ties a caption to a frame, together with the camera, the selected atoms and the
 display settings (style, coloring, water, H-bonds, arrows, paths) at that moment.
 
-- **Make one:** in Lesson mode, open *Edit stops and share*, go to the moment, set up the
-  view, type a caption and click **Add stop here**. **Update stop** overwrites the highlighted one; ✕ deletes. Stops are kept in
-  frame order.
-- **During playback** (Lesson mode) the latest caption at or before the current frame is shown on screen
-  and in the VR wrist menu. When playback reaches a stop, its settings and selection are
-  applied, and with *Pause at stops* on, playback pauses so a student can read and look
+- **Make one** (Create): go to the moment, set up the view, type a caption and click **Add
+  stop here**. To change a stop, go to it (⏮ ⏭ or a click in the list): its caption appears in
+  the box; change the view or caption and click **Update stop** (an empty box keeps the
+  caption). ✕ deletes. Stops are kept in frame order.
+- **During playback** (Watch) the latest caption at or before the current frame is shown on
+  screen and in the VR wrist menu. When playback reaches a stop, its settings and selection
+  are applied, and with *Pause at stops* on, playback pauses so a student can read and look
   around.
 - **Navigate:** the ⏮ / ⏭ stop buttons in the playback bar, a click in the stop list, <kbd>B</kbd>/<kbd>N</kbd> on the keyboard, the stop buttons
   on the VR menu, or left stick up/down in VR. Stops show as yellow ticks on the VR timeline.
@@ -295,19 +308,21 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
 
 Any stop can carry a **voice clip**, so you can build a narrated lesson without typing.
 
-- **In VR:** go to a moment (play, pause, step with B/Y), set up what you want to show, then
-  point at **● hold to talk** on the wrist menu and **hold the trigger while you talk**.
+- **In VR** (Create): go to a moment (play, pause, step with B/Y), set up what you want to
+  show, then point at **● hold to talk** on the wrist menu and **hold the trigger while you
+  talk**. (**＋ add stop** makes a stop without a voice; **⟳ update stop** moves a stop's view
+  to what you see now.)
   The button turns red with a timer, and the controllers buzz at the start and end.
   Letting go puts the clip on the stop at that frame, or makes a new stop with the frame,
   view settings and selected atoms as they were when you started talking. Recording again at
   the same frame replaces the clip and keeps the caption. **▶ hear stop** plays it back;
   **✕ delete stop** removes the stop (press twice). Clips can be up to 3 minutes.
-- **On the desktop:** *Lesson → Edit stops and share → ● Record voice* (click again to stop).
-  In the stop list, ▶ 0:12 plays a clip.
+- **On the desktop** (Create): **● Record voice** in the Lesson section (click again to
+  stop). In the stop list, ▶ 0:12 plays a clip.
 - **Microphone:** the browser asks once. If you plan to record in the headset, press
   **Allow microphone** on the page before entering VR, because a permission prompt may not
   show inside VR.
-- **Students** hear each clip when playback reaches its stop. With *Wait for voice clips*
+- **Students** (Watch) hear each clip when playback reaches its stop. With *Wait for voice clips*
   on (default), playback pauses for the clip and carries on when it ends. ⏮ / ⏭ and the
   stop list play the clip too. Stops with only a voice show *Voice note* as their caption.
 - **Saving and sharing:** clips live in the page until you click **Save lesson file**. It
@@ -327,20 +342,22 @@ Any stop can carry a **voice clip**, so you can build a narrated lesson without 
   level, wherever you are standing or sitting.
   - **Wrist menu** (on the left controller, always turned toward your eyes): point with the
     right controller and pull the trigger. Top to bottom: status, the timeline (drag to
-    scrub; yellow ticks are stops), an info panel (the stop's caption in Lesson mode, else
-    the measurement plot), a step / play / step / reset row, the **Explore | Lesson** switch
-    (in AR with a **room: on/off** passthrough toggle beside it),
-    and eight buttons for the current mode:
+    scrub; yellow ticks are stops), an info panel (the stop's caption in Watch and Create,
+    else the measurement plot), a step / play / step / reset row, the **Explore | Watch |
+    Create** switch with the *detail* button (and in AR a **room: on/off** passthrough
+    toggle), and the buttons for the current mode:
     - *Explore:* style, coloring, water, H-bonds, paths, arrows, atoms −, atoms +.
-    - *Lesson:* previous stop, next stop, restart, pause-at-stops on/off, style, coloring,
-      water, H-bonds.
+    - *Watch:* previous stop, next stop, restart, pause-at-stops on/off, style, coloring,
+      water, H-bonds; ▶ hear stop, wait for voice.
+    - *Create:* previous stop, next stop, ＋ add stop, ⟳ update stop, style, coloring,
+      water, H-bonds; ● hold to talk, ▶ hear stop, ✕ delete stop (press twice).
   - **Grip** to grab and move the system; **both grips** to scale and rotate it.
   - **Trigger** on atoms to pick them (up to 4 for measuring; trigger on empty space clears).
     The ray stops on whatever it is pointing at.
   - Shortcuts: A/X play/pause, **B** (right) one frame forward and **Y** (left) one frame back
     (hold to keep stepping), thumbstick click re-centers the view, right stick
-    ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop in Lesson mode
-    (cycles the water display in Explore). On trackpad controllers (Vive wands) the pad
+    ←→ scrub / ↑↓ speed, left stick ←→ coloring / ↑↓ next/previous stop in Watch and
+    Create (cycles the water display in Explore). On trackpad controllers (Vive wands) the pad
     acts as the stick while touched, and pressing it re-centers.
   - **Hand tracking** (put the controllers down on a Quest):
     - Your hands are drawn (hidden in AR passthrough, where you see your real ones), each

@@ -159,7 +159,7 @@ order after the core; the table goes roughly from most to least important for te
 | **Hydrogen bonds** | Core 2 + Core 3 step 3 | H···A ≤ 2.5 Å and D–H···A ≥ 120°, periodic. Donors: H on N/O/F. Acceptors: F; O with ≤ 2 bonds; N only with a free lone pair (skip 4-bonded N and planar 3-bonded N). Modes: off / with solute / all. Draw as 3D dashes, not lines. | Linear water dimer: exactly 1; bent: 0. Sample, display frame 26: 25 solute H-bonds. |
 | **Color by data, arrows** | Core 1 `props` + Core 3 | Any extra column or vector magnitude on viridis (blue–white–red when signed), 2nd–98th percentile range, legend; 3-component columns (`vx vy vz`, `fx…`, `c_x[1..3]`) as auto-scaled arrows. | One outlier doesn't wash out the colormap. |
 | **Lessons (stops)** | Core 3/4/5 | A stop = frame + caption + selection + display settings + camera (in model coordinates). Playing forward past a stop applies it and can pause. | Stops fire at the right frame, forward and after looping. |
-| **Explore / Lesson modes** | Lessons | Explore: stops never fire. Lesson: stops fire and captions show. A visible switch on desktop and in VR, and a "save this moment as a stop" shortcut. | A student who wanders off in Explore is put back on track when returning to Lesson. |
+| **Explore / Watch / Create modes** | Lessons | Three deliberate modes, switched only by the user (opening a lesson opens Watch). Explore: no lesson at all. Watch: stops fire, captions and voice play; nothing edits. Create: stops never fire; going to a stop loads it for editing; all authoring lives here; hidden for students. Same switch on desktop and in VR, with mode-specific controls. | Playing past a stop changes the view only in Watch; editing calls do nothing outside Create; a student who wanders off in Explore is put back on track on returning to Watch. |
 | **Share links + student mode** | Lessons, Core 1 | Everything (file URLs, type map, settings, stops as base64url UTF-8 JSON) in one URL; `student` hides loading and expert controls. | A copied link restores the scene exactly in a fresh browser. |
 | **Voice lessons** | Lessons + Core 5 | Record a voice clip per stop (hold-to-talk on the wrist menu, a toggle on the desktop); clips play when playback reaches the stop, and playback can wait for them. Save everything (stops + audio) as one lesson file that opens with the trajectory; warn before closing with unsaved clips. Share links can't carry audio. | A recorded clip survives save → reload → open as identical bytes and decodes as audio. |
 | **AR passthrough** | Core 5 | *Enter AR* only where `immersive-ar` is supported; the room shows through, and a wrist-menu toggle switches to a dark backdrop without leaving the session. | Hidden on desktop and SteamVR; on Quest the floor grid disappears in AR. |
@@ -180,7 +180,7 @@ flowchart LR
     C5[Core 5 VR] --> ME
     C5 --> AR[AR passthrough]
     C3 --> LS[Lesson stops]
-    LS --> MO[Explore / Lesson modes]
+    LS --> MO[Explore / Watch / Create modes]
     LS --> SL[Share links + student mode]
 ```
 

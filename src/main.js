@@ -13,8 +13,9 @@ import { updateFist, pokePanel } from './gestures.js';
 import { eventAt, eventIndexAt, motionAt, compactTrack, subtitleAt } from './tracks.js';
 import {
   createRecorder, createPlayer, lessonToJSON, parseLesson, looksLikeLesson, stripVoice, fmtDur,
-  clipsOf, hasVoice, voiceLength, clipLength, analyzeClip, unlockAudio,
+  clipsOf, hasVoice, voiceLength, clipLength, analyzeClip, unlockAudio, decodeClip,
 } from './voice.js';
+import { createTranscriber, speechSamples } from './transcribe.js';
 
 // ---------------------------------------------------------------------------
 // State
@@ -54,6 +55,7 @@ const S = {
   recTick: 0,                    // whole seconds recorded so far (redraws the wrist menu)
   recLevel: 0,                   // microphone level while recording (RMS, 0..1) for the meters
   subtitles: true,               // show narration transcripts as subtitles
+  autoTranscribe: false,         // write each new segment's transcript on this device (opt-in)
   guessed: null,                 // { confidence, notes } from "guess elements"
   frameF: 0, playing: false, fps: 12,
   sel: [],                       // selected atom indices (up to MAX_SEL)
@@ -72,7 +74,7 @@ const params = new URLSearchParams(location.search);
 // Settings remembered between visits (per browser; harmless if storage is unavailable)
 
 const SETTINGS_KEY = 'md-vr-viewer-settings';
-const SAVED = ['rep', 'colorBy', 'atomScale', 'showBonds', 'showBox', 'smooth', 'wrap', 'fps', 'fsPerStep', 'shellR', 'arrowScale', 'detail', 'subtitles'];
+const SAVED = ['rep', 'colorBy', 'atomScale', 'showBonds', 'showBox', 'smooth', 'wrap', 'fps', 'fsPerStep', 'shellR', 'arrowScale', 'detail', 'subtitles', 'autoTranscribe'];
 try {
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
   for (const k of SAVED) if (k in saved && typeof saved[k] === typeof S[k]) S[k] = saved[k];
@@ -2145,6 +2147,7 @@ function renderNarration() {
   $('narrationList').innerHTML = clips.length ? clips.map((c, i) =>
     `<li data-i="${i}"><div class="seg-row"><span>${i + 1}.</span><span class="v" title="Play this segment">▶ ${fmtDur(clipLength(c))}</span>` +
     `<span class="muted small">${c.gain ? `×${c.gain.toFixed(1)} louder` : ''}</span>` +
+    `<span class="tr" title="${c.text ? 'Replace the text with' : 'Write'} an automatic transcript of this segment (on this device)">✎ auto</span>` +
     (c.track ? `<span class="tg" title="Replayed with this segment. Click to drop them.">✋ ${gestureSummary(c.track)} ✕</span>` : '') +
     '<span class="x" title="Remove this segment">✕</span></div>' +
     `<textarea class="seg-text" rows="2" placeholder="What you say here (shown as subtitles)">${esc(c.text || '')}</textarea></li>`).join('')
@@ -2158,6 +2161,12 @@ $('narrationList').addEventListener('click', (e) => {
   if (!li || !st || S.mode !== 'create') return;
   const i = +li.dataset.i;
   if (e.target.classList.contains('v')) { voice.player.stop(); voice.player.play(S.activeStop, [st.clips[i]]); return; }
+  if (e.target.classList.contains('tr')) {
+    const c = st.clips[i];
+    if (c.text && !confirm('Replace this segment’s text with an automatic transcript?')) return;
+    queueTranscribe(c, { force: true });
+    return;
+  }
   if (e.target.classList.contains('tg')) { delete st.clips[i].track; voice.unsaved = true; $('narrationList').dataset.stop = ''; renderNarration(); return; }
   if (e.target.classList.contains('x')) removeClip(S.activeStop, i);
 });
@@ -2171,6 +2180,70 @@ $('narrationList').addEventListener('input', (e) => {
   voice.unsaved = true;
   renderTranscript();
 });
+// ---------------------------------------------------------------------------
+// Automatic transcripts (opt-in): Whisper on this device, in a worker (transcribe.js). The
+// first use downloads the speech model; segments are transcribed one at a time.
+const tx = { engine: null, queue: [], running: false };
+function txMsg(text) { $('transcribeInfo').textContent = text; }
+/** Queue a segment; force replaces text it already has. */
+function queueTranscribe(clip, { force = false } = {}) {
+  if (!clip || tx.queue.some((q) => q.clip === clip) || (!force && clip.text)) return;
+  tx.queue.push({ clip, force });
+  runTranscribe();
+}
+async function runTranscribe() {
+  if (tx.running) return;
+  tx.running = true;
+  let done = 0, failed = '';
+  while (tx.queue.length) {
+    const { clip, force } = tx.queue[0];
+    txMsg(tx.queue.length > 1 ? `Writing transcripts: ${tx.queue.length} segments to go…` : 'Writing the transcript…');
+    try {
+      if (!tx.engine) tx.engine = createTranscriber();
+      const samples = await speechSamples(await decodeClip(clip), clip.trim);
+      const text = await tx.engine.transcribe(samples, (p) => txMsg(`Downloading the speech model (once, about 65 MB): ${Math.round(100 * p)}%`));
+      const inLesson = S.stops.some((st) => clipsOf(st).includes(clip));
+      if (text && inLesson && (force || !clip.text)) {
+        clip.text = text;
+        voice.unsaved = true;
+        done++;
+        showClipText(clip);
+        renderTranscript();
+      }
+    } catch (e) {
+      console.warn('Transcription failed', e);
+      failed = e.message || String(e);
+      tx.queue.length = 0;
+      break;
+    }
+    tx.queue.shift();
+  }
+  tx.running = false;
+  txMsg(failed ? `Could not write the transcript (${failed}). You can type it instead; the first use needs the internet.`
+    : done ? `${done === 1 ? 'Transcript' : `${done} transcripts`} written. Check for mistakes: the speech model is small.`
+    : 'No speech was recognised.');
+}
+/** Puts a segment's new text in its box, unless the teacher is typing there. */
+function showClipText(clip) {
+  const st = S.stops[S.activeStop];
+  const i = st ? clipsOf(st).indexOf(clip) : -1;
+  const ta = i >= 0 && $('narrationList').querySelector(`li[data-i="${i}"] .seg-text`);
+  if (ta && document.activeElement !== ta) ta.value = clip.text;
+}
+$('autoTranscribe').checked = S.autoTranscribe;
+$('autoTranscribe').onchange = (e) => {
+  S.autoTranscribe = e.target.checked;
+  saveSettings();
+  if (S.autoTranscribe) transcribeAll();
+};
+/** Every segment in the lesson without text. */
+function transcribeAll() {
+  const all = S.stops.flatMap((st) => clipsOf(st)), todo = all.filter((c) => !c.text);
+  if (!todo.length) { txMsg(all.length ? 'Every segment already has text.' : ''); return; }
+  for (const c of todo) queueTranscribe(c);
+}
+$('transcribeAll').onclick = transcribeAll;
+
 /** "points · moves · 2 picks" for a segment's gesture track. */
 function gestureSummary(tr) {
   const parts = [];
@@ -2269,6 +2342,7 @@ async function finishVoice(autoClip, prefix = '') {
   let target;
   if (k >= 0) target = S.stops[k]; else { target = st; S.stops.push(target); S.stops.sort((a, b) => a.f - b.f); }
   target.clips = [...clipsOf(target), clip];
+  if (S.autoTranscribe) queueTranscribe(clip);
   S.sampleTour = false; // it's the user's own lesson now
   voice.unsaved = true;
   renderStops();
@@ -3304,7 +3378,7 @@ loadFromParams();
 
 // For debugging in the console.
 window.viewer = {
-  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice, measurementText, root, camera, controls,
+  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice, measurementText, root, camera, controls, tx,
   step: () => frameLoop(performance.now(), null),
   /** Screen position (CSS px) of atom i, for automated tests. */
   screenOf(i) {

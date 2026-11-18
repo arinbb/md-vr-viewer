@@ -231,4 +231,11 @@ console.log('multi-frame bond tests passed');
   const missing = src.filter((f) => !sw.includes(`'src/${f}'`));
   assert.deepEqual(missing, [], `sw.js APP list is missing: ${missing.join(', ')}`);
   console.log('offline cache list covers all modules');
+  // Every module parses (main.js isn't imported by any Node test, so a typo there would
+  // otherwise only show up in the browser).
+  const { execFileSync } = await import('node:child_process');
+  for (const f of [...src.map((x) => `src/${x}`), 'sw.js']) {
+    execFileSync(process.execPath, ['--check', new URL(`../${f}`, import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')], { stdio: 'pipe' });
+  }
+  console.log('every module parses');
 }

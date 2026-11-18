@@ -159,7 +159,7 @@ export function unlockAudio() {
 }
 
 /** Decoded audio of a clip, cached on the clip. */
-async function decodeClip(c) {
+export async function decodeClip(c) {
   if (!c._buf) c._buf = await audioContext().decodeAudioData(await c.blob.arrayBuffer());
   return c._buf;
 }

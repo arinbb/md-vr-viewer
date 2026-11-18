@@ -11,6 +11,7 @@ import { lessonToJSON, parseLesson, looksLikeLesson, stripVoice, bytesToB64, b64
 import { readFileSync } from 'node:fs';
 import { normalizeElement, elementFromMass } from '../src/elements.js';
 import { parseDataFile } from '../src/lammps.js';
+import { cleanTranscript } from '../src/transcribe.js';
 
 // A small periodic box: one water dimer with a linear H-bond, plus a distant third water.
 // Water A: O at origin-ish, H pointing at water B's O. Water B: 2.9 Å away along x.
@@ -385,4 +386,17 @@ console.log('extra column tests passed');
   assert.equal(back.stops[0].clips[0].text, 'Hello there.');
   assert.deepEqual(back.stops[0].clips[0].track, kept);
   console.log('gesture track and transcript tests passed');
+}
+{
+  // Automatic transcripts: Whisper's non-speech markers are removed.
+  assert.equal(cleanTranscript(' [BLANK_AUDIO]'), '');
+  assert.equal(cleanTranscript(' (upbeat music) The water  moves in . '), 'The water moves in.');
+  assert.equal(cleanTranscript(' Look at this oxygen ♪♪, it bonds.'), 'Look at this oxygen, it bonds.');
+  assert.equal(cleanTranscript(undefined), '');
+  // The worker pins the library version the service worker caches.
+  const worker = readFileSync(new URL('../src/transcribe-worker.js', import.meta.url), 'utf8');
+  const sw = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
+  const ver = worker.match(/transformers@([\d.]+)/)[1];
+  assert.ok(sw.includes(`transformers@${ver}/`), 'service worker caches the same transformers.js version');
+  console.log('automatic transcript tests passed');
 }

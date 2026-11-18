@@ -117,6 +117,8 @@ src/
   elements.js          element table: colors, radii, masses; color palettes (DOM-free)
   voice.js             voice clips: recorder, player; lesson files (file part DOM-free)
   tracks.js            gestures while narrating (pointer, picks, moves), subtitles (DOM-free)
+  transcribe.js        automatic transcripts: audio prep and the worker client (opt-in)
+  transcribe-worker.js Whisper (transformers.js) in a worker, loaded on first use
   gestures.js          hand tracking: fist (grab) and fingertip poke from joints (DOM-free)
 tools/
   make_sample.py       synthetic test fixture generator
@@ -328,6 +330,23 @@ pointer halo (`pointerMark`, a child of `model`, so it rides on the atom) and se
 the events. Subtitles: `showSubtitle` sets `#subtitle` (desktop) and `subPanel`, a canvas panel
 placed under the molecule (0.46 × its scale below the centre) and turned toward the head about
 the vertical axis. `window.viewer.step()` runs one animation frame for automated tests.
+
+### 3.8d `transcribe.js` / `transcribe-worker.js`: automatic transcripts
+
+Opt-in; nothing is downloaded until the first transcription. `speechSamples(buf, trim)` crops a
+decoded segment to its trim and resamples it to 16 kHz mono (`OfflineAudioContext`).
+`createTranscriber()` starts the module worker on first `transcribe(samples, onProgress)`;
+the worker imports transformers.js 3.8.1 (`dist/transformers.min.js`, jsDelivr) and runs
+`automatic-speech-recognition` with `onnx-community/whisper-tiny.en`, `dtype: 'q8'`,
+`device: 'wasm'`, 30 s chunks. First use downloads ≈ 65 MB (library 0.9 MB, ONNX Runtime
+WebAssembly 21.6 MB, encoder 10 MB, decoder 31 MB, tokenizer 2.4 MB); transformers.js caches
+the model in Cache Storage and the service worker caches the library cache-first (`SPEECH`).
+`cleanTranscript` (DOM-free) drops Whisper's non-speech markers (`[BLANK_AUDIO]`, `(music)`).
+In `main.js`, `tx` holds the engine and a queue (one segment at a time): `queueTranscribe`
+(skips segments with text unless forced), `transcribeAll`, `S.autoTranscribe` (saved; queues
+each new segment in `finishVoice`), status in `#transcribeInfo`. A result lands only if the
+segment is still in the lesson; it never overwrites a text box the teacher is typing in.
+`viewer.tx.engine` can be replaced with a stand-in for tests.
 
 ### 3.9 `main.js`: the application
 
@@ -799,6 +818,7 @@ sequenceDiagram
 | Desktop UI | Browser checks through `window.viewer` (`screenOf(i)` converts an atom to screen pixels for real clicks) | manual / scripted |
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
 | Hand tracking | Node (`tools/test_features.mjs`): synthetic hands for open, fist, half-curled (no flicker), pinch (not a fist), small and large hands, untracked joints; poke press/hover/release, no press from behind, release off the edge. Emulator (IWER in hand mode): hand models load, rays show, menu on the left wrist joint, fingertip poke on *H-bonds* and *play* (press and toggle back), one-fist grab moves the system exactly with the wrist, two fists scale by the hands' spread ratio, AR passthrough hides the hand models. IWER has no fist pose (tests use `fistOverride`) and doesn't apply pinch values, so pinch→select was driven by dispatching `selectstart`/`selectend` | `node tools/test_features.mjs`; scripted |
+| Automatic transcripts | Node: `cleanTranscript`, the worker's pinned transformers.js version matches the service worker's cache prefix. Browser with a stand-in engine (`viewer.tx.engine`): *Transcribe segments without text* fills only the empty segment, with the audio cropped to its trim (1.2 s → 19 200 samples), keeps typed text, updates the text box and the lesson transcript, marks the lesson unsaved, shows download progress; *✎ auto* replaces after confirming; an engine error shows a message and stops the queue. The real Whisper download and recognition were not run here (the automated check blocked loading outside code) | `node tools/test_features.mjs`; scripted |
 | Gestures and transcripts | Node: event lookup, motion interpolation (45° halfway through a 90° turn, shortest arc), compaction, file validation, subtitle chunking, transcripts and tracks through the lesson file. Browser (frames driven with `viewer.step()`): a desktop recording with mouse pointing, a 60° camera orbit and a pick records pointer events, 27 motion samples ending at 60° and the pick; replayed in Watch the molecule holds still, turns to exactly 60° in step with the recording, the pick and pointer halo appear on schedule, subtitles show and clear. VR recording (grab → motion, ray → pointer) and the VR subtitle panel were not run (the emulator needs a visible pane) | `node tools/test_features.mjs`; scripted |
 | Voice lessons | Node: lesson-file round trip with audio bytes, sorting, metadata, the plain-array tour format, share-link stripping, file sniffing. Browser (real `MediaRecorder`, a 440 Hz tone standing in for the mic): desktop record, re-take keeps the caption, too-short rejected, save → reload → open restores the clip byte-for-byte and it decodes as audio, unsaved-clip warning; emulator VR: hold-to-talk, hear, two-press delete, wait toggle | `node tools/test_features.mjs`; manual / scripted |
 | VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel; after the UI update: the Explore/Lesson switch both ways, next stop, atoms +, water, play/pause, all by aiming the controller and pulling the trigger), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |

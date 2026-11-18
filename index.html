@@ -97,6 +97,7 @@
   #narrationList .seg-row { display: flex; gap: 8px; align-items: baseline; }
   #narrationList .seg-text { width: 100%; margin: 2px 0 4px; font-size: 12px; min-height: 2.6em; }
   #narrationList .tg { color: #f0b429; cursor: pointer; white-space: nowrap; }
+  #narrationList .tr { color: var(--accent, #58a6ff); cursor: pointer; white-space: nowrap; }
   #transcriptBody p { margin: 4px 0 8px; }
   #subtitle { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--bar-h) + 14px); z-index: 5;
     max-width: min(760px, calc(100% - 32px)); background: rgba(0,0,0,0.8); color: #fff; font-size: 17px; line-height: 1.35;
@@ -339,6 +340,10 @@
           <button id="allowMic" title="Ask for the microphone now, e.g. before putting on the headset">Allow microphone</button>
         </div>
         <div id="micMeter" class="meter" hidden title="Microphone level"><div></div></div>
+        <label class="check small" title="Turn each segment into text on this device (Whisper speech recognition). The first use downloads about 65 MB; after that it works offline. The audio never leaves the device.">
+          <input id="autoTranscribe" type="checkbox"> Write transcripts automatically (on this device)</label>
+        <div class="row"><button id="transcribeAll" class="small" title="Write automatic transcripts for every segment that has no text yet">✎ Transcribe segments without text</button></div>
+        <div id="transcribeInfo" class="small muted" aria-live="polite"></div>
         <div id="narration" hidden>
           <div class="small muted" style="margin-top:6px">Narration of this stop</div>
           <ul id="narrationList"></ul>

@@ -349,8 +349,15 @@ remove any piece without redoing the rest.
   a panel under the molecule that turns to face the viewer. Long text is shown a sentence or
   so at a time. *Subtitles* (Watch options) turns them off. **Transcript** in the Lesson section
   shows the whole lesson as text (captions and what is said, stop by stop), for students who
-  can't listen or want to read along. Transcripts are typed (or pasted) for now; automatic
-  transcription isn't built in.
+  can't listen or want to read along.
+- **Automatic transcripts (optional):** type the text yourself, or let the app write it on
+  this device. *Write transcripts automatically* (Create) transcribes each new segment,
+  including ones recorded in VR; **✎ Transcribe segments without text** does the rest of the
+  lesson; **✎ auto** on a segment redoes just that one (it asks before replacing your text).
+  It uses Whisper speech recognition (tiny English model) running in the browser: the first
+  use downloads about 65 MB (needs the internet), after that it works offline, and the audio
+  never leaves the device. It is English only and makes mistakes, so read the text over.
+  Untested on the Quest so far: if it is slow there, transcribe on a PC before sharing.
 - **Pacing per stop:** *Keep playing while this stop talks* narrates over the moving molecules
   (playback neither pauses nor waits at that stop). Otherwise a stop with narration holds still
   while it talks, as set by *Pause at each stop* and *Wait for voice clips*.

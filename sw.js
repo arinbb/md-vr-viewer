@@ -11,14 +11,18 @@
 //
 // Bump VERSION when the file lists change; old caches are deleted on activation.
 
-const VERSION = 'md-vr-v6';
+const VERSION = 'md-vr-v7';
 const THREE = 'https://cdn.jsdelivr.net/npm/three@0.169.0/';
 const PROFILES = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles/';
+// Automatic transcripts: the speech library and its WebAssembly engine, cached on first use
+// only (about 23 MB, so not at install). transformers.js caches the model itself.
+const SPEECH = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/';
 
 const APP = [
   './', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'src/main.js', 'src/parse-worker.js', 'src/lammps.js', 'src/model.js', 'src/analysis.js',
   'src/chem.js', 'src/props.js', 'src/elements.js', 'src/voice.js', 'src/gestures.js', 'src/tracks.js',
+  'src/transcribe.js', 'src/transcribe-worker.js',
 ];
 // Optional: a hosted copy may leave the sample out (tools/build_site.py --no-sample).
 const OPTIONAL = ['samples/sample.lesson.json', 'samples/caffeine_water.lammpstrj.gz'];
@@ -131,7 +135,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || req.headers.has('range')) return;
   const url = new URL(req.url);
-  if (url.href.startsWith(THREE) || url.href.startsWith(PROFILES)) { e.respondWith(cacheFirst(req)); return; }
+  if (url.href.startsWith(THREE) || url.href.startsWith(PROFILES) || url.href.startsWith(SPEECH)) { e.respondWith(cacheFirst(req)); return; }
   if (url.origin !== self.location.origin) return;
   // Any page address (?sample, share links with ?traj=…) is the same app page.
   if (req.mode === 'navigate') { e.respondWith(fromSet(req, PAGE)); return; }

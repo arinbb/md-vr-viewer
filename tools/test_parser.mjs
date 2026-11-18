@@ -222,3 +222,13 @@ console.log('periodic bond tests passed');
   assert.equal(inferStableBonds([frames[1]], el).length / 2, 4, 'single frame works');
 }
 console.log('multi-frame bond tests passed');
+
+// The offline app must cache every module in src/, or the installed app breaks offline.
+{
+  const { readdirSync, readFileSync: rf } = await import('node:fs');
+  const src = readdirSync(new URL('../src/', import.meta.url)).filter((f) => f.endsWith('.js'));
+  const sw = rf(new URL('../sw.js', import.meta.url), 'utf8');
+  const missing = src.filter((f) => !sw.includes(`'src/${f}'`));
+  assert.deepEqual(missing, [], `sw.js APP list is missing: ${missing.join(', ')}`);
+  console.log('offline cache list covers all modules');
+}

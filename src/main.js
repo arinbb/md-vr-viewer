@@ -10,6 +10,7 @@ import { buildGroups, wrapGroups, atomPath, distance, angle, dihedral, waterGrou
 import { nearMask, hbondParticipants, findHBonds, guessElements } from './chem.js';
 import { vectorFamilies, propLabel, propValues, propRange, colormap, gradientCSS, fmt } from './props.js';
 import { updateFist, pokePanel } from './gestures.js';
+import { eventAt, eventIndexAt, motionAt, compactTrack, subtitleAt } from './tracks.js';
 import {
   createRecorder, createPlayer, lessonToJSON, parseLesson, looksLikeLesson, stripVoice, fmtDur,
   clipsOf, hasVoice, voiceLength, clipLength, analyzeClip, unlockAudio,
@@ -52,6 +53,7 @@ const S = {
   voicePlaying: -1,              // stop whose voice clip is playing
   recTick: 0,                    // whole seconds recorded so far (redraws the wrist menu)
   recLevel: 0,                   // microphone level while recording (RMS, 0..1) for the meters
+  subtitles: true,               // show narration transcripts as subtitles
   guessed: null,                 // { confidence, notes } from "guess elements"
   frameF: 0, playing: false, fps: 12,
   sel: [],                       // selected atom indices (up to MAX_SEL)
@@ -70,7 +72,7 @@ const params = new URLSearchParams(location.search);
 // Settings remembered between visits (per browser; harmless if storage is unavailable)
 
 const SETTINGS_KEY = 'md-vr-viewer-settings';
-const SAVED = ['rep', 'colorBy', 'atomScale', 'showBonds', 'showBox', 'smooth', 'wrap', 'fps', 'fsPerStep', 'shellR', 'arrowScale', 'detail'];
+const SAVED = ['rep', 'colorBy', 'atomScale', 'showBonds', 'showBox', 'smooth', 'wrap', 'fps', 'fsPerStep', 'shellR', 'arrowScale', 'detail', 'subtitles'];
 try {
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
   for (const k of SAVED) if (k in saved && typeof saved[k] === typeof S[k]) S[k] = saved[k];
@@ -317,6 +319,12 @@ root.position.copy(HOME);
 scene.add(root);
 const model = new THREE.Group();
 root.add(model);
+// Where the teacher was pointing while narrating: a soft orange halo on that atom.
+const pointerMark = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14),
+  new THREE.MeshBasicMaterial({ color: 0xff9f1a, transparent: true, opacity: 0.4, depthWrite: false }));
+pointerMark.visible = false;
+pointerMark.renderOrder = 2;
+model.add(pointerMark);
 
 let atomMesh = null, bondMesh = null, boxLines = null;
 
@@ -1419,6 +1427,7 @@ $('plot').addEventListener('click', (e) => {
 });
 
 function select(list) {
+  if (voice.track && S.traj) voice.track.sel.push([trackTime(), list.slice(0, MAX_SEL).map((i) => S.traj.ids[i])]);
   S.sel = list.slice(0, MAX_SEL);
   S.series = computeSeries();
   drawPlot();
@@ -1612,6 +1621,13 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   pickAction(hit ? hit.index : -1, !e.shiftKey, !e.shiftKey); // a shift-click that misses keeps the selection
 });
 renderer.domElement.addEventListener('dblclick', () => focusAtom(S.sel[S.sel.length - 1]));
+// While recording narration, the atom under the mouse is the teacher's pointer.
+let mouseNdc = null;
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNdc = [((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1];
+});
+renderer.domElement.addEventListener('pointerleave', () => { mouseNdc = null; });
 
 // Mouse clicks shouldn't leave buttons focused (Space would then press them as well as toggling play).
 document.addEventListener('pointerup', (e) => { const b = e.target.closest && e.target.closest('button'); if (b) b.blur(); });
@@ -1883,6 +1899,7 @@ function renderStops() {
   $('modeWatch').title = S.stops.length ? 'Play the lesson: stops set the view, show captions and play voice clips'
     : 'No lesson yet: open a lesson file, or make one in Create';
   $('watchEmpty').hidden = S.stops.length > 0;
+  renderTranscript();
   drawPlot();
 }
 
@@ -2122,10 +2139,15 @@ function renderNarration() {
   box.hidden = !st;
   if (!st) return;
   const clips = clipsOf(st);
+  // Don't rebuild under the teacher's fingers while they type a transcript.
+  if ($('narrationList').contains(document.activeElement) && $('narrationList').dataset.stop === String(S.activeStop)) return;
+  $('narrationList').dataset.stop = String(S.activeStop);
   $('narrationList').innerHTML = clips.length ? clips.map((c, i) =>
-    `<li data-i="${i}"><span>${i + 1}.</span><span class="v" title="Play this segment">▶ ${fmtDur(clipLength(c))}</span>` +
+    `<li data-i="${i}"><div class="seg-row"><span>${i + 1}.</span><span class="v" title="Play this segment">▶ ${fmtDur(clipLength(c))}</span>` +
     `<span class="muted small">${c.gain ? `×${c.gain.toFixed(1)} louder` : ''}</span>` +
-    '<span class="x" title="Remove this segment">✕</span></li>').join('')
+    (c.track ? `<span class="tg" title="Replayed with this segment. Click to drop them.">✋ ${gestureSummary(c.track)} ✕</span>` : '') +
+    '<span class="x" title="Remove this segment">✕</span></div>' +
+    `<textarea class="seg-text" rows="2" placeholder="What you say here (shown as subtitles)">${esc(c.text || '')}</textarea></li>`).join('')
     : '<li class="muted small">No narration yet: record to add a segment.</li>';
   $('stopOver').checked = !!st.over;
   $('stopOver').disabled = !clips.length;
@@ -2136,8 +2158,40 @@ $('narrationList').addEventListener('click', (e) => {
   if (!li || !st || S.mode !== 'create') return;
   const i = +li.dataset.i;
   if (e.target.classList.contains('v')) { voice.player.stop(); voice.player.play(S.activeStop, [st.clips[i]]); return; }
+  if (e.target.classList.contains('tg')) { delete st.clips[i].track; voice.unsaved = true; $('narrationList').dataset.stop = ''; renderNarration(); return; }
   if (e.target.classList.contains('x')) removeClip(S.activeStop, i);
 });
+$('narrationList').addEventListener('input', (e) => {
+  if (!e.target.classList.contains('seg-text')) return;
+  const st = S.stops[S.activeStop];
+  const i = +e.target.closest('li[data-i]').dataset.i;
+  if (!st || !st.clips[i] || S.mode !== 'create') return;
+  const t = e.target.value.trim();
+  if (t) st.clips[i].text = t; else delete st.clips[i].text;
+  voice.unsaved = true;
+  renderTranscript();
+});
+/** "points · moves · 2 picks" for a segment's gesture track. */
+function gestureSummary(tr) {
+  const parts = [];
+  if (tr.pointer) parts.push('points');
+  if (tr.motion) parts.push('moves');
+  if (tr.sel) parts.push(`${tr.sel.length} pick${tr.sel.length === 1 ? '' : 's'}`);
+  return parts.join(' · ');
+}
+/** The whole lesson as text (Watch and Create): captions and what is said, stop by stop. */
+function renderTranscript() {
+  const box = $('transcriptBody');
+  if (!box) return;
+  const any = S.stops.some((st) => st.cap || clipsOf(st).some((c) => c.text));
+  $('transcriptBox').hidden = !any;
+  box.innerHTML = S.stops.map((st, k) => {
+    const said = clipsOf(st).map((c) => c.text).filter(Boolean).join(' ');
+    if (!st.cap && !said) return '';
+    return `<p><b>Stop ${k + 1}</b> <span class="muted">frame ${st.f + 1}</span>` +
+      `${st.cap ? `<br>${esc(st.cap)}` : ''}${said ? `<br><i>“${esc(said)}”</i>` : ''}</p>`;
+  }).join('');
+}
 $('stopOver').onchange = (e) => {
   const st = S.stops[S.activeStop];
   if (!st || S.mode !== 'create') return;
@@ -2170,6 +2224,7 @@ async function startVoice() {
   voice.quietWarned = false;
   try {
     await voice.rec.start();
+    voice.track = beginTrack();
     S.recTick = 0;
     buzz();
     voiceMsg('Recording… release (or click Stop) when you are done.');
@@ -2197,8 +2252,11 @@ async function finishVoice(autoClip, prefix = '') {
   buzz();
   const st = voice.pending;
   voice.pending = null;
+  const track = compactTrack(voice.track); // pointing, picks and moves made while talking
+  voice.track = null;
   renderVoiceState();
   if (!clip || !st) { voiceMsg('Too short: hold the button for as long as you talk.'); return; }
+  if (track) clip.track = track;
   // Even out the loudness and find the silence at both ends (applied when played).
   let note = '';
   try {
@@ -2268,7 +2326,7 @@ function applyLesson(lesson, name) {
     setStatus(`Kept the current lesson (${name} not opened).`);
     return;
   }
-  if (voice.rec.recording || voice.busy) { voice.pending = null; voice.rec.cancel(); } // belongs to the old lesson
+  if (voice.rec.recording || voice.busy) { voice.pending = null; voice.track = null; voice.rec.cancel(); } // belongs to the old lesson
   stopVoice();
   S.stops = lesson.stops;
   S.activeStop = -1;
@@ -2287,6 +2345,8 @@ function applyLesson(lesson, name) {
 $('recVoice').onclick = () => (voice.rec.recording ? finishVoice() : startVoice());
 for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
 $('voiceVolume').oninput = (e) => { voice.player.volume = +e.target.value; };
+$('subtitlesOn').checked = S.subtitles;
+$('subtitlesOn').onchange = (e) => { S.subtitles = e.target.checked; saveSettings(); };
 $('allowMic').onclick = async () => {
   try { await voice.rec.allow(); voiceMsg('Microphone allowed. In VR, hold “● hold to talk” on the wrist menu.'); }
   catch (e) { voiceMsg(`Microphone not available: ${e.message}`); }
@@ -2413,6 +2473,7 @@ function updateHover() {
       menuRay.set(_ro, _rd);
       const mh = menuRay.intersectObject(menu.mesh, false)[0];
       if (mh && mh.uv) {
+        h.hoverAtom = -1;
         h.menuHit = menu.hitTest(mh.uv);
         h.hover.visible = true;
         h.hover.scale.setScalar(0.35); // small dot so it doesn't cover button labels
@@ -2425,6 +2486,7 @@ function updateHover() {
     // 2. Atoms (every 2nd frame at Medium, every 3rd at Low: picking is O(atoms) per hand).
     if (S.level > 0 && xrFrames % (S.level + 1) !== 0) continue;
     const hit = pickAtom(_ro, _rd);
+    h.hoverAtom = hit ? hit.index : -1;
     h.hover.visible = !!hit;
     h.hover.scale.setScalar(1);
     if (hit) {
@@ -3007,7 +3069,150 @@ function watchFrameRate(raw) {
 // Loop
 
 const clock = new THREE.Clock();
-renderer.setAnimationLoop((time, frame) => {
+// ---------------------------------------------------------------------------
+// Gestures while narrating (tracks.js): recorded with each segment, replayed in sync with it.
+
+const _m = new THREE.Matrix4(), _m2 = new THREE.Matrix4(), _dq = new THREE.Quaternion(), _dp = new THREE.Vector3(), _ds = new THREE.Vector3();
+const trackTime = () => (performance.now() - voice.track.t0) / 1000;
+/**
+ * The molecule's movement in the viewer's eyes since the recording began, in model space:
+ * VR: the teacher's grab moves of `root`; desktop: the inverse of the camera's orbit.
+ */
+function viewMotion(tr) {
+  model.updateMatrix(); root.updateMatrix(); model.updateMatrixWorld(); camera.updateMatrixWorld();
+  if (tr.vr) { // D = F⁻¹ · Root0⁻¹ · Root(t) · F
+    _m.copy(tr.ref).invert().multiply(root.matrix).multiply(model.matrix);
+    return _m2.copy(model.matrix).invert().multiply(_m);
+  }
+  // Desktop: Cm = camera in model space; D = Cm0 · Cm(t)⁻¹
+  _m.copy(model.matrixWorld).invert().multiply(camera.matrixWorld);
+  return _m2.copy(tr.ref).multiply(_m.invert());
+}
+function beginTrack() {
+  root.updateMatrix(); model.updateMatrixWorld(); camera.updateMatrixWorld();
+  const vr = renderer.xr.isPresenting;
+  const ref = vr ? root.matrix.clone() : new THREE.Matrix4().copy(model.matrixWorld).invert().multiply(camera.matrixWorld);
+  return { t0: performance.now(), vr, ref, pointer: [], sel: [], motion: [], lastSample: -1, lastPointer: -2 };
+}
+/** Called every frame while recording: samples pointer (on change) and motion (10 per second). */
+function sampleTrack() {
+  const tr = voice.track;
+  if (!tr || !S.traj) return;
+  const t = trackTime();
+  // Pointer: the ray of a hand that isn't wearing the menu (VR), or the mouse (desktop).
+  let atom = -1;
+  if (renderer.xr.isPresenting) {
+    for (const h of hands) if (h.source && !isMenuHolder(h) && h.hoverAtom >= 0) atom = h.hoverAtom;
+  } else if (mouseNdc && !(t - tr.lastPick < 0.08)) { // picking is O(atoms): ~12 times a second
+    tr.lastPick = t;
+    raycaster.setFromCamera(new THREE.Vector2(mouseNdc[0], mouseNdc[1]), camera);
+    const hit = pickAtom(raycaster.ray.origin, raycaster.ray.direction);
+    tr.mouseAtom = hit ? hit.index : -1;
+  }
+  if (!renderer.xr.isPresenting) atom = mouseNdc ? tr.mouseAtom ?? -1 : -1;
+  const id = atom >= 0 ? S.traj.ids[atom] : -1;
+  if (id !== tr.lastPointer) { tr.pointer.push([t, id]); tr.lastPointer = id; }
+  if (t - tr.lastSample >= 0.1) {
+    tr.lastSample = t;
+    viewMotion(tr).decompose(_dp, _dq, _ds);
+    tr.motion.push([t, _dq.x, _dq.y, _dq.z, _dq.w, _dp.x, _dp.y, _dp.z, (_ds.x + _ds.y + _ds.z) / 3]);
+  }
+}
+
+// Replay state for the segment being played: where the molecule was when it began, and
+// whether the viewer has taken over (grabbing or orbiting stops the replayed moves).
+let replay = null;
+controls.addEventListener('start', () => { if (replay) replay.userMoved = true; });
+const _tp = new THREE.Vector3(), _tq = new THREE.Quaternion(), _ts = new THREE.Vector3();
+function replayTrack() {
+  const pos = voice.player.position;
+  if (!pos || S.mode === 'explore') { pointerMark.visible = false; replay = null; showSubtitle(''); return; }
+  if (!replay || replay.key !== pos.key) {
+    root.updateMatrix(); model.updateMatrix();
+    replay = { key: pos.key, rootStart: root.matrix.clone(), F: model.matrix.clone(), selIdx: -1, userMoved: false };
+  }
+  showSubtitle(S.subtitles && pos.clip.text ? subtitleAt(pos.clip.text, pos.progress) : '');
+  const tr = pos.clip.track;
+  if (!tr || !S.traj) { pointerMark.visible = false; return; }
+  // Pointer: a halo on the atom, following it as it moves.
+  const ev = eventAt(tr.pointer, pos.t);
+  const i = ev && ev[1] >= 0 ? S.traj.ids.indexOf(ev[1]) : -1;
+  pointerMark.visible = i >= 0 && !!S.visible && !!S.visible[i];
+  if (pointerMark.visible) {
+    pointerMark.position.fromArray(S.cur, 3 * i);
+    const r = Math.max(drawRadius(i), 0.3) * 1.9;
+    pointerMark.scale.setScalar(r * (1 + 0.12 * Math.sin(performance.now() / 160)));
+  }
+  // Picks: apply each selection as its moment comes.
+  const si = eventIndexAt(tr.sel, pos.t);
+  if (si !== replay.selIdx) {
+    replay.selIdx = si;
+    if (si >= 0) select(tr.sel[si][1].map((id) => S.traj.ids.indexOf(id)).filter((x) => x >= 0));
+  }
+  // Moves: the teacher's motion, relative to where this viewer has the molecule.
+  if (grabbers.size) replay.userMoved = true;
+  const mo = !replay.userMoved && motionAt(tr.motion, pos.t);
+  if (mo) {
+    _m.compose(_dp.fromArray(mo.p), _dq.set(...mo.q), _ds.setScalar(mo.s));
+    _m2.copy(replay.rootStart).multiply(replay.F).multiply(_m).multiply(_m.copy(replay.F).invert());
+    _m2.decompose(_tp, _tq, _ts);
+    root.position.copy(_tp); root.quaternion.copy(_tq); root.scale.setScalar((_ts.x + _ts.y + _ts.z) / 3);
+    if (S.sel.length) updateLabelPosition();
+  }
+}
+
+// Subtitles: a line on the page, and in VR a panel under the molecule that faces the viewer.
+const subPanel = (() => {
+  const W = 1024, H = 200;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.62 * H / W),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false }));
+  mesh.renderOrder = 10;
+  mesh.visible = false;
+  scene.add(mesh);
+  let shown = '';
+  const head = new THREE.Vector3(), c = new THREE.Vector3();
+  return {
+    set(text) {
+      if (text === shown) return;
+      shown = text;
+      ctx.clearRect(0, 0, W, H);
+      if (!text) return;
+      ctx.fillStyle = 'rgba(0,0,0,0.78)';
+      ctx.beginPath(); ctx.roundRect(4, 4, W - 8, H - 8, 22); ctx.fill();
+      ctx.fillStyle = '#ffffff'; ctx.font = '40px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const words = text.split(' '), lines = [''];
+      for (const w of words) { const t = lines[lines.length - 1] ? `${lines[lines.length - 1]} ${w}` : w; if (ctx.measureText(t).width > W - 60 && lines[lines.length - 1]) lines.push(w); else lines[lines.length - 1] = t; }
+      lines.slice(0, 3).forEach((l, k, a) => ctx.fillText(l, W / 2, H / 2 + (k - (a.length - 1) / 2) * 50));
+      tex.needsUpdate = true;
+    },
+    /** Below the molecule (whatever its size), turned toward the eyes. */
+    place() {
+      mesh.visible = !!shown && renderer.xr.isPresenting;
+      if (!mesh.visible) return;
+      root.getWorldPosition(c);
+      const s = root.scale.x;
+      mesh.position.set(c.x, c.y - 0.46 * s - 0.06, c.z);
+      renderer.xr.getCamera().getWorldPosition(head);
+      head.y = mesh.position.y; // upright, turned only around the vertical
+      mesh.lookAt(head);
+    },
+  };
+})();
+function showSubtitle(text) {
+  subPanel.set(text);
+  const el = $('subtitle');
+  if (el.textContent !== text) el.textContent = text;
+  el.classList.toggle('show', !!text && !renderer.xr.isPresenting);
+  document.body.classList.toggle('has-subtitle', !!text);
+}
+
+/** One display frame (run by the renderer; window.viewer.step() runs one for automated tests). */
+function frameLoop(time, frame) {
   const raw = clock.getDelta();
   const dt = Math.min(raw, 0.1);
   if (renderer.xr.isPresenting) {
@@ -3038,9 +3243,13 @@ renderer.setAnimationLoop((time, frame) => {
     else if (S.sel.length) updateLabelPosition(); // root may have been grabbed
   }
   if (renderer.xr.isPresenting) updateHover();
+  if (voice.track) sampleTrack();
+  replayTrack();
+  subPanel.place();
   renderer.render(scene, camera);
   if (screenshotRequested && !renderer.xr.isPresenting) saveScreenshot();
-});
+}
+renderer.setAnimationLoop(frameLoop);
 
 // Auto-load the sample when opened with ?sample
 // ?sample, or ?traj=<url>&data=<url>&map=1:C+2:H&stride=N&fs=2 to open a trajectory from a link.
@@ -3095,7 +3304,8 @@ loadFromParams();
 
 // For debugging in the console.
 window.viewer = {
-  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice, measurementText, root,
+  S, select, resetView, menu, hands, updatePositions, renderer, setDetail, voice, measurementText, root, camera, controls,
+  step: () => frameLoop(performance.now(), null),
   /** Screen position (CSS px) of atom i, for automated tests. */
   screenOf(i) {
     const v = new THREE.Vector3().fromArray(S.cur, 3 * i);

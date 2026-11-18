@@ -116,6 +116,7 @@ src/
   props.js             extra dump columns: vectors, color ranges, colormaps (DOM-free)
   elements.js          element table: colors, radii, masses; color palettes (DOM-free)
   voice.js             voice clips: recorder, player; lesson files (file part DOM-free)
+  tracks.js            gestures while narrating (pointer, picks, moves), subtitles (DOM-free)
   gestures.js          hand tracking: fist (grab) and fingertip poke from joints (DOM-free)
 tools/
   make_sample.py       synthetic test fixture generator
@@ -292,8 +293,41 @@ for types and molecules (a 12-color Tableau-style palette, then a golden-angle h
 | `clipsOf`, `hasVoice`, `clipLength`, `voiceLength` | A stop's segments, whether it has any, one segment's played length, a stop's total. |
 | `looksLikeLesson(head)`, `stripVoice(stops)`, `fmtDur(s)` | File sniffing in `classify`; share links without audio (`hasVoice: true` marks where narration was); `m:ss`. |
 
-In memory a stop's narration is `stop.clips = [{ blob, mime, dur, gain, trim }]`; `stop.over`
-(true) means it is narrated over the motion.
+In memory a stop's narration is `stop.clips = [{ blob, mime, dur, gain, trim, text, track }]`;
+`stop.over` (true) means it is narrated over the motion. `text` is the segment's transcript;
+`track` its gestures (below). The player's `position` getter gives the segment playing and the
+time on its recording's clock (`{ key, k, i, clip, t, progress }`).
+
+### 3.8c `tracks.js`: gestures while narrating
+
+DOM-free. A track has up to three parts, all timed in seconds from the start of the recording:
+`pointer` `[[t, atomId]]` (on change; -1 = none), `sel` `[[t, [atomIds]]]` (after each pick),
+`motion` `[[t, qx, qy, qz, qw, px, py, pz, s]]` (≈10 Hz): the molecule's movement in the
+viewer's eyes since the segment began, in model space (Å).
+
+| Export | Purpose |
+|---|---|
+| `eventAt`, `eventIndexAt` | The event active at time t (binary search). |
+| `motionAt(motion, t)` | Pose at t: position and scale linear, rotation by `slerp` (shortest arc). |
+| `compactTrack(tr)` | Drops a pointer track that never hit an atom and motion under 1° / 0.2 Å / 1 %; rounds numbers. `null` if nothing is left. |
+| `cleanTrack(tr)` | Validates a track read from a file. |
+| `subtitleChunks`, `subtitleAt(text, progress)` | Splits a transcript into ≤ 90-character pieces at word boundaries (ending at sentences where possible) and picks the one for the playback progress. |
+
+**Recording** (`beginTrack`, `sampleTrack` in the animation loop, `select` hook): pointer = the
+atom under the ray of a hand not wearing the menu (`h.hoverAtom`, from `updateHover`) or under
+the mouse (`mouseNdc`, picked ~12 times a second). Motion `D(t)`: in VR
+`F⁻¹ · Root₀⁻¹ · Root(t) · F` (the teacher's grabs; `F` = `model.matrix`, the fit transform);
+on the desktop `Cm₀ · Cm(t)⁻¹` with `Cm` = the camera in model space (orbiting the camera is
+the molecule turning the other way). `finishVoice` stores `compactTrack(...)` on the clip.
+
+**Replay** (`replayTrack`, every frame while narration plays, not in Explore): when a new
+segment starts it remembers `root` (`rootStart`); then `root = rootStart · F · D(t) · F⁻¹`, so the
+teacher's moves happen relative to wherever this viewer has the molecule. `grabbers` or the
+orbit controls' `start` event set `userMoved`, which stops the moves for that segment. The
+pointer halo (`pointerMark`, a child of `model`, so it rides on the atom) and selections follow
+the events. Subtitles: `showSubtitle` sets `#subtitle` (desktop) and `subPanel`, a canvas panel
+placed under the molecule (0.46 × its scale below the centre) and turned toward the head about
+the vertical axis. `window.viewer.step()` runs one animation frame for automated tests.
 
 ### 3.9 `main.js`: the application
 
@@ -765,6 +799,7 @@ sequenceDiagram
 | Desktop UI | Browser checks through `window.viewer` (`screenOf(i)` converts an atom to screen pixels for real clicks) | manual / scripted |
 | Teaching features | `tools/test_features.mjs` (see below) | `node tools/test_features.mjs` |
 | Hand tracking | Node (`tools/test_features.mjs`): synthetic hands for open, fist, half-curled (no flicker), pinch (not a fist), small and large hands, untracked joints; poke press/hover/release, no press from behind, release off the edge. Emulator (IWER in hand mode): hand models load, rays show, menu on the left wrist joint, fingertip poke on *H-bonds* and *play* (press and toggle back), one-fist grab moves the system exactly with the wrist, two fists scale by the hands' spread ratio, AR passthrough hides the hand models. IWER has no fist pose (tests use `fistOverride`) and doesn't apply pinch values, so pinch→select was driven by dispatching `selectstart`/`selectend` | `node tools/test_features.mjs`; scripted |
+| Gestures and transcripts | Node: event lookup, motion interpolation (45° halfway through a 90° turn, shortest arc), compaction, file validation, subtitle chunking, transcripts and tracks through the lesson file. Browser (frames driven with `viewer.step()`): a desktop recording with mouse pointing, a 60° camera orbit and a pick records pointer events, 27 motion samples ending at 60° and the pick; replayed in Watch the molecule holds still, turns to exactly 60° in step with the recording, the pick and pointer halo appear on schedule, subtitles show and clear. VR recording (grab → motion, ray → pointer) and the VR subtitle panel were not run (the emulator needs a visible pane) | `node tools/test_features.mjs`; scripted |
 | Voice lessons | Node: lesson-file round trip with audio bytes, sorting, metadata, the plain-array tour format, share-link stripping, file sniffing. Browser (real `MediaRecorder`, a 440 Hz tone standing in for the mic): desktop record, re-take keeps the caption, too-short rejected, save → reload → open restores the clip byte-for-byte and it decodes as audio, unsaved-clip warning; emulator VR: hold-to-talk, hear, two-press delete, wait toggle | `node tools/test_features.mjs`; manual / scripted |
 | VR | IWER emulator with scripted controller poses and buttons. Verified: placement, the menu (play, step, timeline, style, color, water, paths, and after the lesson update: the third button row, next-stop, caption and plot panel; after the UI update: the Explore/Lesson switch both ways, next stop, atoms +, water, play/pause, all by aiming the controller and pulling the trigger), atom picking and occlusion, one-hand grab (exact translation), two-hand scale (exact ×2), A button, stick scrub, stick-click reset. | open `/?sample&emulate` |
 | Lessons and links | Browser checks: stops pause playback at the right frame, a copied share link restores mapping, settings and stops in student mode | manual / scripted |

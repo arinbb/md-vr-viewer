@@ -343,3 +343,46 @@ console.log('extra column tests passed');
   assert.ok(pokePanel(edge, { x: 0.2, y: 0, z: 0.0 }, 0.2, 0.245).release, 'leaving the panel releases');
   console.log('hand gesture tests passed');
 }
+
+// ---- Gesture tracks and transcripts (src/tracks.js)
+{
+  const { eventAt, eventIndexAt, motionAt, slerp, compactTrack, cleanTrack, subtitleAt, subtitleChunks } = await import('../src/tracks.js');
+  const ev = [[0.5, 1], [1.2, 7], [3, -1]];
+  assert.equal(eventAt(ev, 0.2), null);
+  assert.deepEqual(eventAt(ev, 1.2), [1.2, 7]);
+  assert.deepEqual(eventAt(ev, 2.9), [1.2, 7]);
+  assert.equal(eventIndexAt(ev, 10), 2);
+  // Motion: halfway between identity and a 90° turn about z is 45°, position and scale halfway.
+  const s = Math.SQRT1_2;
+  const mo = [[0, 0, 0, 0, 1, 0, 0, 0, 1], [1, 0, 0, s, s, 2, 0, 0, 3]];
+  const m = motionAt(mo, 0.5);
+  const angle = 2 * Math.acos(m.q[3]) * 180 / Math.PI;
+  assert.ok(Math.abs(angle - 45) < 1e-6, `slerp angle ${angle}`);
+  assert.deepEqual(m.p, [1, 0, 0]); assert.equal(m.s, 2);
+  assert.deepEqual(motionAt(mo, -1).p, [0, 0, 0]); assert.equal(motionAt(mo, 9).s, 3);
+  // slerp takes the short way round (q and -q are the same rotation)
+  const q = slerp([0, 0, 0, 1], [0, 0, -s, -s], 0.5);
+  assert.ok(Math.abs(2 * Math.acos(Math.abs(q[3])) * 180 / Math.PI - 45) < 1e-6);
+  // compactTrack drops what carries nothing, keeps what does
+  assert.equal(compactTrack({ pointer: [[0, -1]], sel: [], motion: [[0, 0, 0, 0, 1, 0, 0, 0, 1], [0.1, 0, 0, 0.001, 1, 0.01, 0, 0, 1.001]] }), null);
+  const kept = compactTrack({ pointer: [[0, -1], [0.333333, 42]], sel: [[1, [42]]], motion: mo });
+  assert.deepEqual(kept.pointer, [[0, -1], [0.33, 42]]);
+  assert.equal(kept.motion.length, 2); assert.deepEqual(kept.sel, [[1, [42]]]);
+  // cleanTrack (from files) drops malformed parts
+  assert.deepEqual(cleanTrack({ pointer: [[0, 5], ['x', 3]], motion: [[0, 1]] }), null);
+  assert.deepEqual(cleanTrack({ pointer: [[0, 5]], sel: 'bad' }), { pointer: [[0, 5]] });
+  // Subtitles: pieces of at most ~90 characters, at word boundaries, picked by progress
+  const text = 'Watch the oxygen on the right. It accepts a hydrogen bond from this water, and then, about two frames later, the water turns away and the bond breaks.';
+  const chunks = subtitleChunks(text);
+  assert.ok(chunks.length >= 2 && chunks.every((c) => c.length <= 90), chunks.join(' | '));
+  assert.equal(chunks.join(' '), text, 'nothing lost');
+  assert.equal(subtitleAt(text, 0), chunks[0]);
+  assert.equal(subtitleAt(text, 0.999), chunks[chunks.length - 1]);
+  assert.equal(subtitleAt('', 0.5), '');
+  // Transcripts and tracks survive the lesson file
+  const st = [{ f: 1, cap: 'c', clips: [{ blob: new Blob([new Uint8Array([1, 2, 3])]), mime: 'audio/webm', dur: 1, text: 'Hello there.', track: kept }] }];
+  const back = parseLesson(await lessonToJSON(st));
+  assert.equal(back.stops[0].clips[0].text, 'Hello there.');
+  assert.deepEqual(back.stops[0].clips[0].track, kept);
+  console.log('gesture track and transcript tests passed');
+}

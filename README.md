@@ -332,6 +332,25 @@ remove any piece without redoing the rest.
   so older lesson files get the same treatment. If a segment needed a lot of raising, or no
   speech was heard, a note says so. Moving the microphone closer still sounds better than
   amplifying a distant voice. In Watch, *Voice volume* raises or lowers all narration.
+- **Pointing and moving while you talk:** what you do during a recording is kept with that
+  segment and replayed in sync with your voice:
+  - **pointing**: the atom your ray (VR) or mouse (desktop) is on gets an orange halo that
+    follows the atom as it moves;
+  - **picks**: atoms you select appear selected at the same moment (with their labels and
+    measurements);
+  - **moves**: turning, moving or zooming the molecule (a VR grab, or orbiting and zooming the
+    desktop camera) is replayed as the molecule turning in front of the viewer, relative to
+    wherever they have it. Grabbing it (VR) or dragging the view (desktop) takes over and stops
+    the replayed moves for that segment.
+  In Create, a segment with gestures shows **✋ points · moves · 1 pick ✕**; click it to drop
+  them and keep only the voice.
+- **Transcripts and subtitles:** each segment has a text box for what you say. In Watch the
+  text is shown as subtitles while the segment plays: a line above the playback bar, and in VR
+  a panel under the molecule that turns to face the viewer. Long text is shown a sentence or
+  so at a time. *Subtitles* (Watch options) turns them off. **Transcript** in the Lesson section
+  shows the whole lesson as text (captions and what is said, stop by stop), for students who
+  can't listen or want to read along. Transcripts are typed (or pasted) for now; automatic
+  transcription isn't built in.
 - **Pacing per stop:** *Keep playing while this stop talks* narrates over the moving molecules
   (playback neither pauses nor waits at that stop). Otherwise a stop with narration holds still
   while it talks, as set by *Pause at each stop* and *Wait for voice clips*.
@@ -406,6 +425,7 @@ src/chem.js           element guessing, solvation-shell masks, hydrogen bonds
 src/props.js          extra dump columns: vector detection, color ranges, colormaps
 src/elements.js       element colors / radii / masses
 src/voice.js          voice clips: recorder, player, lesson files (.lesson.json)
+src/tracks.js         gestures while narrating (pointer, picks, moves) and subtitles
 src/gestures.js       hand tracking: fist and fingertip-poke detection from hand joints
 src/parse-worker.js   streams (and gunzips) files off the main thread (memory guard)
 samples/caffeine_water.lammpstrj.gz  the sample: caffeine in water, real student NPT run

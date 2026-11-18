@@ -1,12 +1,16 @@
 // Narration for lesson stops: recording (microphone → compressed audio), loudness and silence
 // analysis, playback, and the lesson file that carries stops together with their audio.
 //
-// A stop's narration is a list of segments, `stop.clips = [{ blob, mime, dur, gain, trim }]`,
-// played one after another. `gain` evens out loudness (quiet talkers are raised, a limiter
+// A stop's narration is a list of segments, `stop.clips = [{ blob, mime, dur, gain, trim,
+// text, track }]`, played one after another. `text` is the segment's transcript (subtitles) and
+// `track` what the teacher did while speaking (pointing, picks, moving the molecule; see
+// tracks.js). `gain` evens out loudness (quiet talkers are raised, a limiter
 // keeps loud ones clean) and `trim = [start, end]` (seconds) skips silence at both ends. Both
 // are applied at playback, so the recording itself is never altered. In a lesson file each blob
 // becomes base64 text. Lesson files, `analyzeSamples` and the helpers don't touch the DOM, so
 // they run in Node for the tests; recorder and player need a browser.
+
+import { cleanTrack } from './tracks.js';
 
 export const LESSON_FORMAT = 'md-vr-lesson';
 export const MAX_CLIP_S = 180;
@@ -52,6 +56,7 @@ export async function lessonToJSON(stops, meta = {}) {
         enc.push({
           mime: c.mime, dur: +(+c.dur).toFixed(2), data: bytesToB64(new Uint8Array(await c.blob.arrayBuffer())),
           ...(c.gain ? { gain: +c.gain.toFixed(3) } : {}), ...(c.trim ? { trim: c.trim.map((x) => +x.toFixed(3)) } : {}),
+          ...(c.text ? { text: c.text } : {}), ...(c.track ? { track: c.track } : {}),
         });
       }
       out.push({ ...rest, clips: enc });
@@ -77,6 +82,9 @@ export function parseLesson(text) {
     const out = { blob: new Blob([b64ToBytes(c.data)], { type: mime }), mime, dur: +c.dur || 0 };
     if (+c.gain > 0) out.gain = +c.gain;
     if (Array.isArray(c.trim) && c.trim.length === 2) out.trim = [+c.trim[0], +c.trim[1]];
+    if (typeof c.text === 'string' && c.text.trim()) out.text = c.text;
+    const track = cleanTrack(c.track);
+    if (track) out.track = track;
     return out;
   };
   const stops = raw.filter((s) => s && Number.isInteger(s.f) && s.f >= 0).map((s) => {
@@ -254,7 +262,7 @@ export function createRecorder({ onTick, onAutoStop } = {}) {
  * by itself; onFail(k) if the audio can't be played.
  */
 export function createPlayer({ onEnd, onFail } = {}) {
-  let current = -1, src = null, token = 0, out = null;
+  let current = -1, src = null, token = 0, out = null, seg = null, segCount = 0;
   function chain() {
     if (out) return out;
     const c = audioContext();
@@ -268,6 +276,15 @@ export function createPlayer({ onEnd, onFail } = {}) {
   }
   const player = {
     get playing() { return current; },
+    /**
+     * The segment playing now: { key (new for every segment started), k (stop), i (segment),
+     * clip, t (seconds into the recording), progress (0..1 through the played part) }, or null.
+     */
+    get position() {
+      if (!seg || current < 0 || !out) return null;
+      const t = Math.min(seg.to, seg.from + (out.c.currentTime - seg.at));
+      return { key: seg.key, k: seg.k, i: seg.i, clip: seg.clip, t, progress: (t - seg.from) / Math.max(1e-6, seg.to - seg.from) };
+    },
     /** Master voice volume (1 = as analysed). */
     set volume(v) { chain().volume.gain.value = v; },
     get volume() { return chain().volume.gain.value; },
@@ -290,8 +307,12 @@ export function createPlayer({ onEnd, onFail } = {}) {
           src.buffer = buf;
           src.connect(g).connect(volume);
           const [a, b] = clip.trim || [0, buf.duration];
+          // Which segment is playing, and from where in its recording (for subtitles and
+          // gesture replay, whose times are on the recording's clock).
+          seg = { key: ++segCount, k, i: clips.indexOf(clip), clip, at: c.currentTime, from: a, to: b };
           await new Promise((resolve) => { src.onended = resolve; src.start(0, a, Math.max(0.05, b - a)); });
           g.disconnect();
+          seg = null;
         }
         if (my !== token) return;
         const k0 = current; current = -1; src = null;
@@ -312,6 +333,7 @@ export function createPlayer({ onEnd, onFail } = {}) {
         src = null;
       }
       current = -1;
+      seg = null;
     },
   };
   return player;

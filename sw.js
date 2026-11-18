@@ -11,14 +11,14 @@
 //
 // Bump VERSION when the file lists change; old caches are deleted on activation.
 
-const VERSION = 'md-vr-v5';
+const VERSION = 'md-vr-v6';
 const THREE = 'https://cdn.jsdelivr.net/npm/three@0.169.0/';
 const PROFILES = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles/';
 
 const APP = [
   './', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'src/main.js', 'src/parse-worker.js', 'src/lammps.js', 'src/model.js', 'src/analysis.js',
-  'src/chem.js', 'src/props.js', 'src/elements.js', 'src/voice.js', 'src/gestures.js',
+  'src/chem.js', 'src/props.js', 'src/elements.js', 'src/voice.js', 'src/gestures.js', 'src/tracks.js',
 ];
 // Optional: a hosted copy may leave the sample out (tools/build_site.py --no-sample).
 const OPTIONAL = ['samples/sample.lesson.json', 'samples/caffeine_water.lammpstrj.gz'];

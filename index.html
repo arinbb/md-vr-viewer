@@ -93,7 +93,16 @@
   .meter > div { height: 100%; width: 0; background: #3fb950; transition: width 0.08s linear; }
   .meter.quiet > div { background: #d29922; }
   #narrationList { list-style: none; margin: 2px 0 4px; padding: 0; }
-  #narrationList li { display: flex; gap: 8px; align-items: baseline; padding: 2px 4px; font-size: 12px; }
+  #narrationList li { padding: 2px 4px; font-size: 12px; }
+  #narrationList .seg-row { display: flex; gap: 8px; align-items: baseline; }
+  #narrationList .seg-text { width: 100%; margin: 2px 0 4px; font-size: 12px; min-height: 2.6em; }
+  #narrationList .tg { color: #f0b429; cursor: pointer; white-space: nowrap; }
+  #transcriptBody p { margin: 4px 0 8px; }
+  #subtitle { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--bar-h) + 14px); z-index: 5;
+    max-width: min(760px, calc(100% - 32px)); background: rgba(0,0,0,0.8); color: #fff; font-size: 17px; line-height: 1.35;
+    padding: 6px 14px; border-radius: 8px; text-align: center; display: none; pointer-events: none; }
+  #subtitle.show { display: block; }
+  body.has-subtitle #caption { bottom: calc(var(--bar-h) + 80px); }
   #narrationList .v { color: var(--accent); cursor: pointer; }
   #narrationList .x { margin-left: auto; cursor: pointer; color: var(--muted); }
   #narrationList .x:hover { color: #f85149; }
@@ -173,6 +182,7 @@
 <div id="caption"></div>
 <div id="drop">Drop a LAMMPS dump (and optional data file)</div>
 
+<div id="subtitle" aria-live="polite"></div>
 <div id="ui">
   <header>
     <h1>MD Trajectory Viewer</h1>
@@ -303,10 +313,15 @@
     <div class="sec-body">
       <p class="hint w-only" id="watchEmpty">This file has no lesson. Open a lesson file, or make one in <b>Create</b>.</p>
       <ul id="stopList"></ul>
+      <details class="sub" id="transcriptBox" hidden>
+        <summary>Transcript</summary>
+        <div id="transcriptBody" class="small"></div>
+      </details>
       <div class="w-only">
         <label class="check small"><input id="pauseAtStops" type="checkbox" checked> Pause at each stop during playback</label>
         <label class="check small"><input id="waitVoice" type="checkbox" checked> Wait for voice clips to finish, then carry on</label>
         <label class="small">Voice volume <input id="voiceVolume" type="range" min="0.5" max="3" step="0.1" value="1"></label>
+        <label class="check small"><input id="subtitlesOn" type="checkbox" checked> Subtitles (what is said, when the teacher added it)</label>
       </div>
       <div class="c-only adv" id="lessonEditor">
         <p class="hint">A stop ties a caption, the camera and the current settings to a frame.</p>

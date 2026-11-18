@@ -89,6 +89,14 @@
   #stopList .v { color: var(--accent); font-size: 12px; white-space: nowrap; cursor: pointer; padding: 0 4px; }
   #stopList .v:hover { text-decoration: underline; }
   #recVoice.rec { background: #a40e26; border-color: #f85149; color: #fff; }
+  .meter { height: 6px; margin-top: 6px; background: var(--hover); border-radius: 3px; overflow: hidden; }
+  .meter > div { height: 100%; width: 0; background: #3fb950; transition: width 0.08s linear; }
+  .meter.quiet > div { background: #d29922; }
+  #narrationList { list-style: none; margin: 2px 0 4px; padding: 0; }
+  #narrationList li { display: flex; gap: 8px; align-items: baseline; padding: 2px 4px; font-size: 12px; }
+  #narrationList .v { color: var(--accent); cursor: pointer; }
+  #narrationList .x { margin-left: auto; cursor: pointer; color: var(--muted); }
+  #narrationList .x:hover { color: #f85149; }
   #stopList .f { color: var(--muted); font-size: 11px; min-width: 38px; flex-shrink: 0; }
   #stopList .t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   #stopList .x { margin-left: auto; color: var(--muted); padding: 0 4px; }
@@ -298,6 +306,7 @@
       <div class="w-only">
         <label class="check small"><input id="pauseAtStops" type="checkbox" checked> Pause at each stop during playback</label>
         <label class="check small"><input id="waitVoice" type="checkbox" checked> Wait for voice clips to finish, then carry on</label>
+        <label class="small">Voice volume <input id="voiceVolume" type="range" min="0.5" max="3" step="0.1" value="1"></label>
       </div>
       <div class="c-only adv" id="lessonEditor">
         <p class="hint">A stop ties a caption, the camera and the current settings to a frame.</p>
@@ -306,11 +315,20 @@
           <button id="addStop" title="Save the current frame, camera, selection and display settings with this caption">Add stop here</button>
           <button id="updateStop" title="Overwrite the highlighted stop with the current view and caption" disabled>Update stop</button>
         </div>
-        <p class="hint" style="margin-top:8px">Voice: go to a moment and record. The clip goes on the stop at that frame (or makes one).
+        <p class="hint" style="margin-top:8px">Narration: go to a moment and record. Each recording is added as a
+          segment to the stop at that frame (or makes one), so you can narrate in pieces and remove
+          any piece. Loudness is evened out and silence at both ends skipped automatically.
           In VR, hold <b>● hold to talk</b> on the wrist menu.</p>
         <div class="row">
-          <button id="recVoice" title="Record a voice clip for this moment; click again to stop">● Record voice</button>
+          <button id="recVoice" title="Record a segment of narration for this moment; click again to stop">● Record (adds a segment)</button>
           <button id="allowMic" title="Ask for the microphone now, e.g. before putting on the headset">Allow microphone</button>
+        </div>
+        <div id="micMeter" class="meter" hidden title="Microphone level"><div></div></div>
+        <div id="narration" hidden>
+          <div class="small muted" style="margin-top:6px">Narration of this stop</div>
+          <ul id="narrationList"></ul>
+          <label class="check small" title="Narrate over the moving molecules: in Watch, playback neither pauses at this stop nor waits for the voice">
+            <input id="stopOver" type="checkbox"> Keep playing while this stop talks</label>
         </div>
         <div class="row" style="margin-top:6px">
           <button id="saveLesson" title="Save all stops with their voice clips as one .lesson.json file">Save lesson file</button>

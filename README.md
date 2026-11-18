@@ -309,31 +309,45 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
 
 ### Voice lessons (record in the headset)
 
-Any stop can carry a **voice clip**, so you can build a narrated lesson without typing.
+Any stop can carry **narration**, so you can build a spoken lesson without typing. Narration
+is made of **segments**: each recording is added to the stop, so you can talk in pieces and
+remove any piece without redoing the rest.
 
 - **In VR** (Create): go to a moment (play, pause, step with B/Y), set up what you want to
   show, then point at **● hold to talk** on the wrist menu and **hold the trigger while you
-  talk**. (**＋ add stop** makes a stop without a voice; **⟳ update stop** moves a stop's view
-  to what you see now.)
-  The button turns red with a timer, and the controllers buzz at the start and end.
-  Letting go puts the clip on the stop at that frame, or makes a new stop with the frame,
-  view settings and selected atoms as they were when you started talking. Recording again at
-  the same frame replaces the clip and keeps the caption. **▶ hear stop** plays it back;
-  **✕ delete stop** removes the stop (press twice). Clips can be up to 3 minutes.
-- **On the desktop** (Create): **● Record voice** in the Lesson section (click again to
-  stop). In the stop list, ▶ 0:12 plays a clip.
+  talk**. The button turns red with a timer and a level meter (▮▮▮▯▯▯▯▯), and the controllers
+  buzz at the start and end. Letting go adds the segment to the stop at that frame, or makes a
+  new stop with the frame, view settings and selected atoms as they were when you started
+  talking. **▶ hear stop** plays the whole narration, **↶ last segment** removes the most
+  recent piece, **✕ delete stop** removes the stop (press twice). **＋ add stop** makes a stop
+  without a voice; **⟳ update stop** moves a stop's view to what you see now. Segments can be
+  up to 3 minutes each.
+- **On the desktop** (Create): **● Record (adds a segment)** in the Lesson section (click again
+  to stop), with a level meter. Under it, *Narration of this stop* lists the segments: ▶ plays
+  one, ✕ removes it. In the stop list, ▶ 0:19 (3) plays a stop's narration (3 segments).
+- **Quiet talkers:** every segment is analysed when you finish it. Its loudness is evened
+  out (quiet speech raised up to ×12, loud speech lowered; a limiter keeps it clean) and the
+  silence at the start and end is skipped (0.15 s before the first word and 0.3 s after the
+  last are kept). Nothing is cut from the recording itself: both are applied when it plays,
+  so older lesson files get the same treatment. If a segment needed a lot of raising, or no
+  speech was heard, a note says so. Moving the microphone closer still sounds better than
+  amplifying a distant voice. In Watch, *Voice volume* raises or lowers all narration.
+- **Pacing per stop:** *Keep playing while this stop talks* narrates over the moving molecules
+  (playback neither pauses nor waits at that stop). Otherwise a stop with narration holds still
+  while it talks, as set by *Pause at each stop* and *Wait for voice clips*.
 - **Microphone:** the browser asks once. If you plan to record in the headset, press
   **Allow microphone** on the page before entering VR, because a permission prompt may not
   show inside VR.
-- **Students** (Watch) hear each clip when playback reaches its stop. With *Wait for voice clips*
-  on (default), playback pauses for the clip and carries on when it ends. ⏮ / ⏭ and the
-  stop list play the clip too. Stops with only a voice show *Voice note* as their caption.
-- **Saving and sharing:** clips live in the page until you click **Save lesson file**. It
-  downloads `<trajectory>.lesson.json` with every stop and clip inside (about 4 KB per
-  second of voice). The page warns before closing with unsaved clips. Students open the
+- **Students** (Watch) hear the narration when playback reaches its stop. ⏮ / ⏭ and the stop
+  list play it too. Stops with only a voice show *Voice note* as their caption. The Lesson
+  heading shows the lesson's length, e.g. *7 stops · 2:31 voice*.
+- **Saving and sharing:** narration lives in the page until you click **Save lesson file**. It
+  downloads `<trajectory>.lesson.json` with every stop and segment inside (about 4 KB per
+  second of voice). The page warns before closing with unsaved changes. Students open the
   lesson file **together with the trajectory** (*Open files…*, select both), or on its own
   once the trajectory is open. Hosted: put it next to the data and add `&lesson=` with its
-  address to a share link. Share links themselves can't hold audio.
+  address to a share link. Share links themselves can't hold audio. Lesson files saved before
+  segments existed still open (their clip becomes the first segment).
 
 ## Controls
 

@@ -278,17 +278,22 @@ for force-field type names. `elementFromMass` matches masses within 0.6 amu and 
 13–16 amu united-atom CH*n* groups as carbon. `paletteColor(i)` gives distinct colors
 for types and molecules (a 12-color Tableau-style palette, then a golden-angle hue walk).
 
-### 3.8b `voice.js`: voice clips and lesson files
+### 3.8b `voice.js`: narration and lesson files
 
 | Export | Purpose |
 |---|---|
-| `createRecorder({ onTick })` | `MediaRecorder` on the microphone (Opus in WebM where supported, else MP4 or Ogg; 32 kbit/s; echo cancellation and noise suppression). `start()` asks for the mic the first time; the stream stays open for quick re-takes and is released after a minute idle. `stop()` resolves `{ blob, mime, dur }`, or `null` under 0.4 s. Clips stop at 3 minutes. `allow()` asks for the mic without recording. |
-| `createPlayer({ onEnd })` | One `Audio` element; `play(k, voice)` plays stop *k*'s clip from an object URL, `onEnd(k)` fires when it finishes by itself. |
-| `lessonToJSON(stops, meta)` | Lesson file text: `{ format: 'md-vr-lesson', version: 1, trajectory, map, fs, stops }`, each clip as `voice: { mime, dur, data: base64 }` (chunked `bytesToB64`). |
-| `parseLesson(text)` | Our format or a plain array of stops (like `samples/sample.lesson.json`); clips back to Blobs; returns `{ stops, meta, clips }`. |
-| `looksLikeLesson(head)`, `stripVoice(stops)`, `fmtDur(s)` | File sniffing in `classify`; share links without audio (`hasVoice: true` marks where a clip was); `m:ss`. |
+| `createRecorder({ onTick, onAutoStop })` | `MediaRecorder` on the microphone (Opus in WebM where supported, else MP4 or Ogg; 32 kbit/s; echo cancellation, noise suppression, auto gain). `start()` asks for the mic the first time; the stream stays open for quick re-takes and is released after a minute idle. `stop()` resolves `{ blob, mime, dur }`, or `null` under 0.4 s; `cancel()` drops it. Segments stop at 3 minutes (`onAutoStop`). `level` is the input RMS from an `AnalyserNode` for the meters; `onTick` fires every 100 ms. `allow()` asks for the mic without recording. |
+| `analyzeSamples(samples, rate)` | DOM-free. 20 ms RMS windows; noise floor = 10th percentile; speech = windows above max(3.5 × floor, 8 % of the loudest, 0.002). Returns `trim` (0.15 s before the first speech to 0.3 s after the last), `gain` (speech RMS → 0.08 ≈ −22 dBFS, clamped to ×0.25…×12), `rms`, `peak`, `speech`. |
+| `analyzeClip(clip)` | Decodes the clip (cached) and stores `clip.gain` and `clip.trim`. |
+| `createPlayer({ onEnd, onFail })` | Web Audio: `play(k, clips)` decodes and plays the segments in order, each from `trim[0]` to `trim[1]` at its `gain`, through a master `volume` and a limiter (`DynamicsCompressor`, −8 dB threshold, ratio 12). Clips without analysis (older files) are analysed first. `onEnd(k)` when the last segment ends; `stop()` cancels. |
+| `audioContext()`, `unlockAudio()` | The page's one `AudioContext`; resumed on the first pointer or key press (and when recording starts). |
+| `lessonToJSON(stops, meta)` | `{ format: 'md-vr-lesson', version: 2, trajectory, map, fs, stops }`; each stop's `clips` as `[{ mime, dur, gain, trim, data: base64 }]` (chunked `bytesToB64`); other stop fields (e.g. `over`) as they are. |
+| `parseLesson(text)` | Version 2 (`clips`), version 1 (one `voice` per stop, read as one segment) or a plain array of stops; audio back to Blobs; `{ stops, meta, clips }` (segment count). |
+| `clipsOf`, `hasVoice`, `clipLength`, `voiceLength` | A stop's segments, whether it has any, one segment's played length, a stop's total. |
+| `looksLikeLesson(head)`, `stripVoice(stops)`, `fmtDur(s)` | File sniffing in `classify`; share links without audio (`hasVoice: true` marks where narration was); `m:ss`. |
 
-In memory a stop with a clip has `stop.voice = { blob, mime, dur }`.
+In memory a stop's narration is `stop.clips = [{ blob, mime, dur, gain, trim }]`; `stop.over`
+(true) means it is narrated over the motion.
 
 ### 3.9 `main.js`: the application
 
@@ -674,25 +679,29 @@ a refit or window resize. Stops are kept sorted by frame.
   trajectory loads because coloring and arrow choices depend on its columns. `lesson=`
   loads a lesson file after the trajectory.
 
-**Voice clips** (`voice` object near the top of `main.js`; functions after `copyLink`):
+**Narration** (`voice` object near the top of `main.js`; functions after `copyLink`):
 
-- **Recording:** `startVoice()` pauses playback, saves the moment with `captureStop('')`
-  (frame, view settings, selection; the camera too on the desktop) and starts the recorder.
-  `finishVoice()` attaches the clip to that moment: it replaces the stop at the same frame
-  (keeping its caption) or inserts a new one (Create only) and marks
-  `voice.unsaved`. The wrist menu's *● hold to talk* starts on `selectstart`
-  (`menu.press`) and finishes on `selectend` (`menu.release`), wherever the ray is by
-  then. The desktop's *● Record voice* toggles. `buzz()` pulses the controllers'
-  haptic actuators at start and end.
-- **Playback:** `onFrameChange` plays a stop's clip when playback reaches it
-  (`playVoice(k, { wait })`: with *Wait for voice clips*, playback pauses and resumes in
-  the player's `onEnd`). `gotoStop`, the stop list and *▶ hear stop* play clips too;
-  any mode change stops them (`stopVoice`).
+- **Recording:** `startVoice()` (Create only) pauses playback, saves the moment with
+  `captureStop('')` (frame, view settings, selection; the camera too on the desktop) and
+  starts the recorder. `finishVoice()` analyses the segment (`analyzeClip`) and **appends** it
+  to the stop at the same frame, or inserts a new stop with it; recording never replaces.
+  `removeClip(k, i)` removes one segment (`-1`: the last; the wrist menu's *↶ last segment*);
+  the stop stays. The wrist menu's *● hold to talk* starts on `selectstart` (`menu.press`)
+  and finishes on `selectend` (`menu.release`). `renderVoiceState` draws the desktop meter
+  (`#micMeter`, warns after 2.5 s of near-silence) and the VR button's `meterText`;
+  `renderNarration` lists the edited stop's segments (`#narrationList`, ▶ / ✕) and its
+  pacing checkbox (`#stopOver` → `stop.over`). `buzz()` pulses the controllers.
+- **Playback:** `onFrameChange` (Watch) plays a stop's narration when playback reaches it
+  (`playVoice(k, { wait })`). A stop with `over` neither pauses (even with *Pause at each
+  stop*) nor waits; otherwise, with *Wait for voice clips*, playback pauses and resumes in the
+  player's `onEnd`. `gotoStop`, the stop list and *▶ hear stop* play narration too; any mode
+  change stops it (`stopVoice`). `#voiceVolume` sets the player's master volume.
 - **Files:** *Save lesson file* downloads `lessonToJSON(...)`. `classify` recognises lesson
   files (`.json` or `looksLikeLesson`); `loadFiles` applies one after its trajectory
   (`applyLesson`), or on its own to the current trajectory (`openLocal` then leaves the
   current setup alone). A lesson's `map` fills an empty type map before parsing. A
-  `beforeunload` guard warns while clips are unsaved.
+  `beforeunload` guard warns while changes are unsaved. The Lesson badge shows the total
+  narration (`voiceLength`).
 
 ## 7. VR interaction layer
 

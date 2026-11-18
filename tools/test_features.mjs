@@ -7,7 +7,7 @@ import { inferBonds } from '../src/model.js';
 import { buildGroups, waterGroups } from '../src/analysis.js';
 import { nearMask, hbondParticipants, findHBonds, guessElements } from '../src/chem.js';
 import { vectorFamilies, propRange, propValues, colormap, propLabel } from '../src/props.js';
-import { lessonToJSON, parseLesson, looksLikeLesson, stripVoice, bytesToB64, b64ToBytes, fmtDur } from '../src/voice.js';
+import { lessonToJSON, parseLesson, looksLikeLesson, stripVoice, bytesToB64, b64ToBytes, fmtDur, analyzeSamples, voiceLength, clipsOf } from '../src/voice.js';
 import { readFileSync } from 'node:fs';
 import { normalizeElement, elementFromMass } from '../src/elements.js';
 import { parseDataFile } from '../src/lammps.js';
@@ -168,29 +168,67 @@ console.log('extra column tests passed');
   assert.deepEqual(b64ToBytes(bytesToB64(bytes)), bytes, 'base64 round trip');
 
   const audio = Uint8Array.from({ length: 5000 }, (_, i) => (i * 13) & 255);
+  const audio2 = Uint8Array.from({ length: 1200 }, (_, i) => (i * 7) & 255);
+  const mk = (bytes, dur, extra = {}) => ({ blob: new Blob([bytes], { type: 'audio/webm;codecs=opus' }), mime: 'audio/webm;codecs=opus', dur, ...extra });
   const stops = [
     { f: 30, cap: 'second', sel: [5], v: { rep: 'ballstick' } },
-    { f: 3, cap: '', sel: [], v: {}, voice: { blob: new Blob([audio], { type: 'audio/webm;codecs=opus' }), mime: 'audio/webm;codecs=opus', dur: 4.567 } },
+    { f: 3, cap: '', sel: [], v: {}, over: true, clips: [mk(audio, 4.567, { gain: 3.14159, trim: [0.21, 4.4] }), mk(audio2, 1.5)] },
   ];
   const text = await lessonToJSON(stops, { trajectory: 'run.lammpstrj', map: '1:O 2:H' });
   assert.ok(looksLikeLesson(text), 'a saved lesson is recognised');
   const back = parseLesson(text);
   assert.equal(back.stops.length, 2);
-  assert.equal(back.clips, 1);
+  assert.equal(back.clips, 2, 'two narration segments');
   assert.deepEqual(back.stops.map((s) => s.f), [3, 30], 'stops come back sorted by frame');
   assert.equal(back.meta.trajectory, 'run.lammpstrj');
   assert.equal(back.meta.map, '1:O 2:H');
-  const v = back.stops[0].voice;
-  assert.equal(v.mime, 'audio/webm;codecs=opus');
-  assert.equal(v.dur, 4.57);
-  assert.deepEqual(new Uint8Array(await v.blob.arrayBuffer()), audio, 'audio bytes survive the file');
-  assert.equal(back.stops[1].voice, undefined);
+  const [c1, c2] = back.stops[0].clips;
+  assert.equal(c1.mime, 'audio/webm;codecs=opus');
+  assert.equal(c1.dur, 4.57);
+  assert.equal(c1.gain, 3.142, 'gain kept');
+  assert.deepEqual(c1.trim, [0.21, 4.4], 'trim kept');
+  assert.equal(back.stops[0].over, true, 'per-stop pacing kept');
+  assert.deepEqual(new Uint8Array(await c1.blob.arrayBuffer()), audio, 'audio bytes survive the file');
+  assert.deepEqual(new Uint8Array(await c2.blob.arrayBuffer()), audio2, 'second segment too');
+  assert.equal(back.stops[1].clips, undefined);
+  assert.ok(Math.abs(voiceLength(back.stops[0]) - (4.4 - 0.21 + 1.5)) < 1e-9, 'length as played: trimmed + untrimmed');
+  // Version-1 files (one "voice" per stop) still open, as a single segment.
+  const v1 = JSON.stringify({ format: 'md-vr-lesson', version: 1, stops: [{ f: 2, cap: 'old', voice: { mime: 'audio/webm', dur: 2, data: bytesToB64(audio2) } }] });
+  const old = parseLesson(v1);
+  assert.equal(old.clips, 1); assert.equal(clipsOf(old.stops[0]).length, 1); assert.equal(old.stops[0].voice, undefined);
 
   // share links: no audio, but they say a clip existed
   const lean = stripVoice(stops);
-  assert.equal(lean[1].voice, undefined);
+  assert.equal(lean[1].clips, undefined);
   assert.equal(lean[1].hasVoice, true);
   assert.ok(!JSON.stringify(lean).includes('blob'));
+
+  // Loudness and silence analysis on synthetic "speech": 1 s silence (faint noise), 2 s of a
+  // voiced tone, 1.5 s silence, at 16 kHz.
+  const sr = 16000;
+  const speech = (amp) => {
+    const x = new Float32Array(Math.round(4.5 * sr));
+    let seed = 1; const noise = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.002;
+    for (let i = 0; i < x.length; i++) {
+      const t = i / sr;
+      const on = t >= 1 && t < 3;
+      x[i] = noise() + (on ? amp * Math.sin(2 * Math.PI * 180 * t) * (0.6 + 0.4 * Math.sin(2 * Math.PI * 4 * t)) : 0);
+    }
+    return x;
+  };
+  const quiet = analyzeSamples(speech(0.02), sr), loud = analyzeSamples(speech(0.5), sr);
+  assert.ok(quiet.speech && loud.speech);
+  assert.ok(Math.abs(quiet.trim[0] - 0.85) < 0.05 && Math.abs(quiet.trim[1] - 3.3) < 0.05, `trim ${quiet.trim}`);
+  assert.ok(quiet.gain > 5, `a quiet talker is raised a lot (×${quiet.gain.toFixed(1)})`);
+  assert.ok(loud.gain < 1, `a loud one lowered (×${loud.gain.toFixed(2)})`);
+  // After the gain, both come out at about the same level.
+  const q = quiet.rms * quiet.gain, l = loud.rms * loud.gain;
+  assert.ok(Math.abs(q - l) / l < 0.1, `levels evened out: ${q.toFixed(3)} vs ${l.toFixed(3)}`);
+  // Silence only: no speech, no gain, no trimming.
+  const silent = analyzeSamples(speech(0), sr);
+  assert.ok(!silent.speech && silent.gain === 1 && silent.trim[0] === 0);
+  // Extremely quiet: capped at ×12 (amplifying room noise further would not help).
+  assert.equal(analyzeSamples(speech(0.0035), sr).gain, 12);
 
   // the bundled tour (a plain array of stops) loads as a lesson file too
   const tourText = readFileSync(new URL('../samples/sample.lesson.json', import.meta.url), 'utf8');

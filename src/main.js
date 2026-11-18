@@ -10,7 +10,10 @@ import { buildGroups, wrapGroups, atomPath, distance, angle, dihedral, waterGrou
 import { nearMask, hbondParticipants, findHBonds, guessElements } from './chem.js';
 import { vectorFamilies, propLabel, propValues, propRange, colormap, gradientCSS, fmt } from './props.js';
 import { updateFist, pokePanel } from './gestures.js';
-import { createRecorder, createPlayer, lessonToJSON, parseLesson, looksLikeLesson, stripVoice, fmtDur } from './voice.js';
+import {
+  createRecorder, createPlayer, lessonToJSON, parseLesson, looksLikeLesson, stripVoice, fmtDur,
+  clipsOf, hasVoice, voiceLength, clipLength, analyzeClip, unlockAudio,
+} from './voice.js';
 
 // ---------------------------------------------------------------------------
 // State
@@ -48,6 +51,7 @@ const S = {
   drawDirty: true,               // draw lists (visible atoms/bonds packed to the front) need rebuilding
   voicePlaying: -1,              // stop whose voice clip is playing
   recTick: 0,                    // whole seconds recorded so far (redraws the wrist menu)
+  recLevel: 0,                   // microphone level while recording (RMS, 0..1) for the meters
   guessed: null,                 // { confidence, notes } from "guess elements"
   frameF: 0, playing: false, fps: 12,
   sel: [],                       // selected atom indices (up to MAX_SEL)
@@ -82,7 +86,7 @@ function saveSettings() {
 // Voice clips on lesson stops (src/voice.js). Defined early: setMode and the menu use it.
 const voice = {
   rec: createRecorder({
-    onTick: (t) => { if (Math.floor(t) !== S.recTick) { S.recTick = Math.floor(t); renderVoiceState(); } },
+    onTick: (t) => { S.recTick = Math.floor(t); S.recLevel = voice.rec.level; renderVoiceState(); },
     onAutoStop: (clip) => finishVoice(clip, 'Reached the 3-minute limit. '),
   }),
   player: createPlayer({
@@ -1176,8 +1180,9 @@ function onFrameChange(i0) {
     const k = S.stops.findIndex((s) => s.f > from && s.f <= i0);
     if (k >= 0) {
       applyStop(k, { playback: true });
-      if ($('pauseAtStops').checked) { setPlaying(false); S.frameF = S.stops[k].f; S.dirty = true; }
-      if (S.stops[k].voice) playVoice(k, { wait: $('waitVoice').checked && S.playing });
+      const over = !!S.stops[k].over && hasVoice(S.stops[k]); // narrated over the motion: keep playing
+      if ($('pauseAtStops').checked && !over) { setPlaying(false); S.frameF = S.stops[k].f; S.dirty = true; }
+      if (hasVoice(S.stops[k])) playVoice(k, { wait: $('waitVoice').checked && S.playing && !over });
     }
   }
   // Caption: the latest stop at or before this frame.
@@ -1836,10 +1841,10 @@ function setActiveStop(k) {
   S.activeStop = k;
   const st = S.stops[k];
   const cap = $('caption');
-  if (st && (st.cap || st.voice || S.mode === 'create')) {
-    const v = st.voice ? ` · voice ${fmtDur(st.voice.dur)}` : '';
+  if (st && (st.cap || hasVoice(st) || S.mode === 'create')) {
+    const v = hasVoice(st) ? ` · voice ${fmtDur(voiceLength(st))}` : '';
     const head = S.mode === 'create' ? `Editing stop ${k + 1} of ${S.stops.length}` : `Stop ${k + 1} of ${S.stops.length}`;
-    const body = st.cap ? esc(st.cap) : st.voice ? '<i>Voice note</i>' : '<i>No caption yet</i>';
+    const body = st.cap ? esc(st.cap) : hasVoice(st) ? '<i>Voice note</i>' : '<i>No caption yet</i>';
     cap.innerHTML = `<span class="n">${head}${v}</span>${body}`;
     cap.classList.add('show');
   } else {
@@ -1853,6 +1858,7 @@ function setActiveStop(k) {
   $('addStop').title = here ? 'This frame already has a stop: change it with Update stop'
     : 'Save the current frame, camera, selection and display settings with this caption';
   if (S.mode === 'create' && (st || null) !== editedStop) loadCaptionBox(st);
+  renderNarration();
 }
 // "Typed" means the box differs from the caption it was loaded with; undoing the edit lets it
 // follow the stops again.
@@ -1863,11 +1869,14 @@ $('stopCaption').addEventListener('input', () => {
 function renderStops() {
   if (voice.playingStop) S.voicePlaying = S.stops.indexOf(voice.playingStop); // indices move on insert/delete
   $('stopList').innerHTML = S.stops.map((st, k) =>
-    `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span class="t" title="${esc(st.cap || '')}">${esc(st.cap || (st.voice ? '(voice note)' : '(no caption)'))}</span>` +
-    (st.voice ? `<span class="v" title="Play or stop the voice clip">${S.voicePlaying === k ? '■' : '▶'} ${fmtDur(st.voice.dur)}</span>` : '') +
+    `<li data-k="${k}"><span class="f">fr ${st.f + 1}</span><span class="t" title="${esc(st.cap || '')}">${esc(st.cap || (hasVoice(st) ? '(voice note)' : '(no caption)'))}</span>` +
+    (hasVoice(st) ? `<span class="v" title="Play or stop the narration">${voiceBadge(st, k)}</span>` : '') +
     '<span class="x adv" title="Delete this stop">✕</span></li>').join('');
   setActiveStop(Math.min(S.activeStop, S.stops.length - 1));
-  $('stopsBadge').textContent = S.stops.length ? `${S.stops.length} stop${S.stops.length === 1 ? '' : 's'}` : '';
+  // The lesson at a glance: stops, and how much narration it has.
+  const talk = S.stops.reduce((a, st) => a + voiceLength(st), 0);
+  $('stopsBadge').textContent = S.stops.length
+    ? `${S.stops.length} stop${S.stops.length === 1 ? '' : 's'}${talk ? ` · ${fmtDur(talk)} voice` : ''}` : '';
   $('bar').classList.toggle('has-stops', S.stops.length > 0);
   $('modeWatchN').textContent = S.stops.length ? ` (${S.stops.length})` : '';
   $('modeWatch').disabled = !S.stops.length;
@@ -1937,7 +1946,7 @@ $('stopList').addEventListener('click', (e) => {
   const k = +li.dataset.k;
   if (e.target.classList.contains('x')) {
     if (S.mode !== 'create') return;
-    if (!confirm(`Delete stop ${k + 1}${S.stops[k].cap ? ` ("${S.stops[k].cap.slice(0, 40)}")` : ''}${S.stops[k].voice ? ' and its voice clip' : ''}?`)) return;
+    if (!confirm(`Delete stop ${k + 1}${S.stops[k].cap ? ` ("${S.stops[k].cap.slice(0, 40)}")` : ''}${hasVoice(S.stops[k]) ? ' and its narration' : ''}?`)) return;
     voice.unsaved = true;
     stopVoice();
     S.stops.splice(k, 1);
@@ -1971,7 +1980,8 @@ $('updateStop').onclick = () => {
 };
 /** Update keeps what the new snapshot can't hold: the clip, and the camera when made in VR. */
 function keepFromOld(st, old) {
-  if (old.voice) st.voice = old.voice;
+  if (hasVoice(old)) st.clips = old.clips;
+  if (old.over) st.over = true;
   if (!st.cam && old.cam) st.cam = old.cam; // VR has no desktop camera to save
   if (voice.playingStop === old) voice.playingStop = st;
 }
@@ -2045,10 +2055,10 @@ $('copyLink').onclick = async () => {
   const { url, local } = shareLink();
   let copied = false;
   try { await navigator.clipboard.writeText(url); copied = true; } catch { /* insecure context etc. */ }
-  if (!S.stops.some((st) => st.voice)) voice.unsaved = false; // the link holds the whole lesson
+  if (!S.stops.some(hasVoice)) voice.unsaved = false; // the link holds the whole lesson
   $('linkInfo').innerHTML = (copied ? 'Link copied. ' : 'Copy this link: ') +
     (local ? `It expects <code>${esc(S.name)}</code>${S.dataName ? ` and <code>${esc(S.dataName)}</code>` : ''} next to <code>index.html</code> on the server. ` : '') +
-    (S.stops.some((st) => st.voice) ? 'Voice clips are not in links: use <b>Save lesson file</b> and share that file too (or host it and add <code>&amp;lesson=</code> its address). ' : '') +
+    (S.stops.some(hasVoice) ? 'Voice clips are not in links: use <b>Save lesson file</b> and share that file too (or host it and add <code>&amp;lesson=</code> its address). ' : '') +
     `<br><input type="text" readonly value="${esc(url)}" onclick="this.select()">`;
 };
 
@@ -2075,14 +2085,77 @@ function buzz() {
     if (act && act.pulse) act.pulse(0.6, 60).catch(() => {});
   }
 }
+/** ▶ 0:19 (3) — total narration, and the number of segments when there are several. */
+function voiceBadge(st, k) {
+  const n = clipsOf(st).length;
+  return `${S.voicePlaying === k ? '■' : '▶'} ${fmtDur(voiceLength(st))}${n > 1 ? ` (${n})` : ''}`;
+}
+/** Microphone level as a short bar of 8 cells, for the VR button. */
+const meterText = (lv) => { const n = Math.min(8, Math.round(Math.sqrt(Math.min(1, lv * 6)) * 8)); return '▮'.repeat(n) + '▯'.repeat(8 - n); };
+let quietSince = 0;
 function renderVoiceState() {
   const b = $('recVoice');
-  b.textContent = voice.rec.recording ? `■ Stop recording (${fmtDur(S.recTick)})` : '● Record voice';
+  b.textContent = voice.rec.recording ? `■ Stop recording (${fmtDur(S.recTick)})` : '● Record (adds a segment)';
   b.classList.toggle('rec', voice.rec.recording);
+  // Live input meter; warn if the voice stays very quiet (the clip is raised later, but a
+  // closer microphone always sounds better than amplified room noise).
+  const m = $('micMeter');
+  m.hidden = !voice.rec.recording;
+  if (voice.rec.recording) {
+    const lv = S.recLevel;
+    m.firstElementChild.style.width = `${Math.min(100, Math.sqrt(Math.min(1, lv * 6)) * 100)}%`;
+    m.classList.toggle('quiet', lv < 0.01);
+    if (S.recTick >= 2 && lv < 0.004) {
+      if (!quietSince) quietSince = performance.now();
+      if (performance.now() - quietSince > 2500 && !voice.quietWarned) { voice.quietWarned = true; voiceMsg('Very quiet: speak up or hold the microphone closer. (Quiet clips are raised automatically.)'); }
+    } else quietSince = 0;
+  }
   [...$('stopList').querySelectorAll('.v')].forEach((el) => {
     const k = +el.parentElement.dataset.k;
-    if (S.stops[k] && S.stops[k].voice) el.textContent = `${S.voicePlaying === k ? '■' : '▶'} ${fmtDur(S.stops[k].voice.dur)}`;
+    if (hasVoice(S.stops[k])) el.textContent = voiceBadge(S.stops[k], k);
   });
+}
+/** Create: the narration of the stop being edited, segment by segment. */
+function renderNarration() {
+  const box = $('narration');
+  const st = S.mode === 'create' ? S.stops[S.activeStop] : null;
+  box.hidden = !st;
+  if (!st) return;
+  const clips = clipsOf(st);
+  $('narrationList').innerHTML = clips.length ? clips.map((c, i) =>
+    `<li data-i="${i}"><span>${i + 1}.</span><span class="v" title="Play this segment">▶ ${fmtDur(clipLength(c))}</span>` +
+    `<span class="muted small">${c.gain ? `×${c.gain.toFixed(1)} louder` : ''}</span>` +
+    '<span class="x" title="Remove this segment">✕</span></li>').join('')
+    : '<li class="muted small">No narration yet: record to add a segment.</li>';
+  $('stopOver').checked = !!st.over;
+  $('stopOver').disabled = !clips.length;
+}
+$('narrationList').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-i]');
+  const st = S.stops[S.activeStop];
+  if (!li || !st || S.mode !== 'create') return;
+  const i = +li.dataset.i;
+  if (e.target.classList.contains('v')) { voice.player.stop(); voice.player.play(S.activeStop, [st.clips[i]]); return; }
+  if (e.target.classList.contains('x')) removeClip(S.activeStop, i);
+});
+$('stopOver').onchange = (e) => {
+  const st = S.stops[S.activeStop];
+  if (!st || S.mode !== 'create') return;
+  st.over = e.target.checked || undefined;
+  voice.unsaved = true;
+};
+/** Removes segment i of stop k (Create). The stop itself stays. */
+function removeClip(k, i) {
+  const st = S.stops[k];
+  if (!st || !hasVoice(st) || S.mode !== 'create') return;
+  stopVoice();
+  st.clips.splice(i < 0 ? st.clips.length - 1 : i, 1);
+  if (!st.clips.length) { delete st.clips; delete st.over; }
+  voice.unsaved = true;
+  renderStops();
+  setActiveStop(k);
+  const left = clipsOf(st).length;
+  voiceMsg(left ? `Removed a segment: stop ${k + 1} has ${left} left (${fmtDur(voiceLength(st))}).` : `Stop ${k + 1} has no narration now.`);
 }
 /** Starts recording. The moment (frame, view, selection) is saved now, the clip when you stop. */
 async function startVoice() {
@@ -2094,6 +2167,7 @@ async function startVoice() {
   stopVoice();
   voice.pending = captureStop('');
   voice.stopWhenReady = false;
+  voice.quietWarned = false;
   try {
     await voice.rec.start();
     S.recTick = 0;
@@ -2125,23 +2199,31 @@ async function finishVoice(autoClip, prefix = '') {
   voice.pending = null;
   renderVoiceState();
   if (!clip || !st) { voiceMsg('Too short: hold the button for as long as you talk.'); return; }
+  // Even out the loudness and find the silence at both ends (applied when played).
+  let note = '';
+  try {
+    const a = await analyzeClip(clip);
+    if (!a.speech) note = ' No speech was heard in it: check the microphone.';
+    else if (a.gain > 6) note = ' It was very quiet, so it is raised a lot; a closer microphone sounds better.';
+  } catch (e) { console.warn('Could not analyse the clip', e); }
+  // Recording never replaces: it adds a segment to the stop at that frame (or makes the stop).
   const k = S.stops.findIndex((x) => x.f === st.f);
   let target;
-  if (k >= 0) { target = S.stops[k]; target.voice = clip; } else {
-    target = st; target.voice = clip;
-    S.stops.push(target); S.stops.sort((a, b) => a.f - b.f);
-  }
+  if (k >= 0) target = S.stops[k]; else { target = st; S.stops.push(target); S.stops.sort((a, b) => a.f - b.f); }
+  target.clips = [...clipsOf(target), clip];
   S.sampleTour = false; // it's the user's own lesson now
   voice.unsaved = true;
   renderStops();
   setActiveStop(S.stops.indexOf(target));
-  voiceMsg(`${prefix}Voice clip on stop ${S.stops.indexOf(target) + 1} (${fmtDur(clip.dur)}). Save the lesson file to keep it.`);
+  const n = target.clips.length;
+  voiceMsg(`${prefix}${n > 1 ? `Added segment ${n}` : 'Narration'} on stop ${S.stops.indexOf(target) + 1}: ${fmtDur(clipLength(clip))}` +
+    `${n > 1 ? `, ${fmtDur(voiceLength(target))} in all` : ''}.${note} Save the lesson file to keep it.`);
 }
 /** Plays stop k's clip. wait: pause playback until it ends, then carry on. */
 function playVoice(k, { wait = false } = {}) {
   const st = S.stops[k];
-  if (!st || !st.voice || voice.rec.recording || S.mode === 'explore') return;
-  if (!voice.player.play(k, st.voice)) return;
+  if (!st || !hasVoice(st) || voice.rec.recording || S.mode === 'explore') return;
+  if (!voice.player.play(k, st.clips)) return;
   S.voicePlaying = k;
   voice.playingStop = st;
   voice.resume = false; // a new clip cancels any "carry on after the clip" of an earlier one
@@ -2166,7 +2248,7 @@ function deleteStopHere() {
     const stamp = performance.now();
     voice.deleteArmed = stamp;
     voice.deleteTarget = S.stops[k];
-    vrNote(`Press delete again to remove stop ${k + 1}${S.stops[k].voice ? ' and its voice clip' : ''}`);
+    vrNote(`Press delete again to remove stop ${k + 1}${hasVoice(S.stops[k]) ? ' and its narration' : ''}`);
     setTimeout(() => { if (voice.deleteArmed === stamp) voice.deleteArmed = 0; }, 3100);
     return;
   }
@@ -2203,6 +2285,8 @@ function applyLesson(lesson, name) {
   setStatus(S.traj ? `${$('status').textContent} · ${msg}` : `${msg} Now open its trajectory.`);
 }
 $('recVoice').onclick = () => (voice.rec.recording ? finishVoice() : startVoice());
+for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
+$('voiceVolume').oninput = (e) => { voice.player.volume = +e.target.value; };
 $('allowMic').onclick = async () => {
   try { await voice.rec.allow(); voiceMsg('Microphone allowed. In VR, hold “● hold to talk” on the wrist menu.'); }
   catch (e) { voiceMsg(`Microphone not available: ${e.message}`); }
@@ -2578,7 +2662,8 @@ const menu = (() => {
   const ROW3 = {
     explore: [],
     watch: row3([HEAR, ['waitVoice', () => ($('waitVoice').checked ? 'wait for voice' : "don't wait")]]),
-    create: row3([['rec', () => (voice.rec.recording ? `■ ${fmtDur(S.recTick)} release` : '● hold to talk')], HEAR,
+    create: row3([['rec', () => (voice.rec.recording ? `■ ${fmtDur(S.recTick)} ${meterText(S.recLevel)}` : '● hold to talk')], HEAR,
+      ['popClip', () => '↶ last segment'],
       ['delStop', () => (voice.deleteArmed ? 'press again' : '✕ delete stop')]]),
   };
   const student = () => document.body.classList.contains('student');
@@ -2599,7 +2684,9 @@ const menu = (() => {
     if (id === 'rec') return voice.rec.supported && S.mode === 'create';
     if (id === 'addStop') return S.mode === 'create' && !S.stops.some((st) => st.f === Math.floor(S.frameF));
     if (id === 'updStop') return S.mode === 'create' && stopIndexHere() >= 0;
-    if (id === 'hear') { const k = stopIndexHere(); return S.voicePlaying >= 0 || (k >= 0 && !!S.stops[k].voice); }
+    if (id === 'hear') { const k = stopIndexHere(); return S.voicePlaying >= 0 || (k >= 0 && hasVoice(S.stops[k])); }
+    if (id === 'popClip') { const k = stopIndexHere(); return S.mode === 'create' && k >= 0 && hasVoice(S.stops[k]); }
+    if (id === 'overStop') { const k = stopIndexHere(); return S.mode === 'create' && k >= 0 && hasVoice(S.stops[k]); }
     if (id === 'delStop') return S.mode === 'create' && stopIndexHere() >= 0;
     if (id === 'water') return !$('water').disabled;
     if (id === 'hb') return !$('hbonds').disabled;
@@ -2663,6 +2750,7 @@ const menu = (() => {
         break;
       }
       case 'delStop': deleteStopHere(); break;
+      case 'popClip': removeClip(stopIndexHere(), -1); break;
       case 'pauseStops': $('pauseAtStops').checked = !$('pauseAtStops').checked; break;
       case 'smaller': nudge('atomScale', -0.1); break;
       case 'bigger': nudge('atomScale', 0.1); break;
@@ -2694,7 +2782,8 @@ const menu = (() => {
     const key = [S.name, f, nf, S.playing, Math.round(S.fps), S.rep, S.colorBy, S.waterMode, S.showPaths, S.hbonds,
       S.arrows, S.hbCount, sel, tm, S.activeStop, stop && stop.cap, S.stops.length, !!S.series,
       [...hover].join(), $('water').disabled, S.mode, S.atomScale, $('pauseAtStops').checked, arSession, S.passthrough, S.detail, S.level, S.vrNote,
-      voice.rec.recording, S.recTick, S.voicePlaying, voice.deleteArmed, $('waitVoice').checked, stop && stop.voice && stop.voice.dur,
+      voice.rec.recording, S.recTick, voice.rec.recording && meterText(S.recLevel), S.voicePlaying, voice.deleteArmed,
+      $('waitVoice').checked, stop && voiceLength(stop), stop && clipsOf(stop).length,
       inputKind()].join('|');
     if (key === last) return;
     last = key;
@@ -2736,14 +2825,17 @@ const menu = (() => {
 
     // Info area: lesson caption takes priority, then the measurement plot, then a hint.
     infoShowsPlot = false;
-    if (S.mode !== 'explore' && stop && (stop.cap || stop.voice || S.mode === 'create')) {
+    if (S.mode !== 'explore' && stop && (stop.cap || hasVoice(stop) || S.mode === 'create')) {
       ctx.fillStyle = '#10243d';
       ctx.beginPath(); ctx.roundRect(INFO.x, INFO.y, INFO.w, INFO.h, 14); ctx.fill();
       ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = '#8b949e'; ctx.font = '20px system-ui, sans-serif';
-      ctx.fillText(`${S.mode === 'create' ? 'editing stop' : 'stop'} ${S.activeStop + 1} of ${S.stops.length}${stop.voice ? ` · voice ${fmtDur(stop.voice.dur)}` : ''}`, INFO.x + 16, INFO.y + 26);
+      const nSeg = clipsOf(stop).length;
+      ctx.fillText(`${S.mode === 'create' ? 'editing stop' : 'stop'} ${S.activeStop + 1} of ${S.stops.length}` +
+        `${nSeg ? ` · voice ${fmtDur(voiceLength(stop))}${nSeg > 1 ? ` in ${nSeg} segments` : ''}` : ''}`, INFO.x + 16, INFO.y + 26);
       const capText = stop.cap || (S.voicePlaying === S.activeStop ? 'Playing the voice note…'
-        : stop.voice ? 'Voice note: press ▶ hear stop to listen.' : 'No caption or voice yet: hold to talk to record one.');
+        : hasVoice(stop) ? (S.mode === 'create' ? 'Voice note. Hold to talk adds a segment; ↶ removes the last one.' : 'Voice note: press ▶ hear stop to listen.')
+        : 'No caption or voice yet: hold to talk to record one.');
       ctx.fillStyle = '#e6edf3';
       // Largest font at which the whole caption fits (5-7 lines); the last size clips if it must.
       for (const [px, lh] of [[26, 31], [23, 27], [20, 24]]) {

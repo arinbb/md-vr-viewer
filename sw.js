@@ -11,7 +11,7 @@
 //
 // Bump VERSION when the file lists change; old caches are deleted on activation.
 
-const VERSION = 'md-vr-v4';
+const VERSION = 'md-vr-v5';
 const THREE = 'https://cdn.jsdelivr.net/npm/three@0.169.0/';
 const PROFILES = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles/';
 
@@ -102,6 +102,12 @@ async function updateSet() {
   if (changed) for (const c of await self.clients.matchAll()) c.postMessage('md-vr-updated');
 }
 
+// The page asks once it has loaded all its files (and when an installed app is resumed), so
+// an update never lands while a page is still fetching its modules.
+self.addEventListener('message', (e) => {
+  if (e.data === 'md-vr-check-update') e.waitUntil(updateSet().catch(() => {}));
+});
+
 /** The cached copy; the network only if this file was never cached. */
 async function fromSet(req, key) {
   const hit = await (await caches.open(VERSION)).match(key);
@@ -128,11 +134,7 @@ self.addEventListener('fetch', (e) => {
   if (url.href.startsWith(THREE) || url.href.startsWith(PROFILES)) { e.respondWith(cacheFirst(req)); return; }
   if (url.origin !== self.location.origin) return;
   // Any page address (?sample, share links with ?traj=…) is the same app page.
-  if (req.mode === 'navigate') {
-    e.respondWith(fromSet(req, PAGE));
-    e.waitUntil(updateSet().catch(() => {}));
-    return;
-  }
+  if (req.mode === 'navigate') { e.respondWith(fromSet(req, PAGE)); return; }
   const key = url.origin + url.pathname;
   if (appURLs.has(key)) e.respondWith(fromSet(req, key));
   // Anything else on the same server (e.g. trajectories behind share links) goes straight to

@@ -127,6 +127,8 @@ export function createRecorder({ onTick, onAutoStop } = {}) {
       if (!rec) return Promise.resolve(null);
       return new Promise((resolve) => { finish = resolve; rec.stop(); });
     },
+    /** Stops and throws the recording away (no clip, no auto-stop callback). */
+    cancel() { if (rec) { finish = () => {}; rec.stop(); } },
     release,
   };
 }

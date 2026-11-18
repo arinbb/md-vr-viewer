@@ -26,7 +26,9 @@
   #ui > header h1 { font-size: 15px; margin: 0; flex: 1; }
   #statusBox { padding: 0 12px 8px; border-bottom: 1px solid var(--border); }
   #xrNote { margin-top: 6px; font-size: 12px; color: #f0b429; }
-  #updateNote { margin-top: 6px; font-size: 12px; color: var(--accent); }
+  #updateNote { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 20;
+    background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; }
+  #updateNote { font-size: 12px; color: var(--accent); }
   #updateNote button { margin-left: 6px; padding: 2px 8px; }
   #sections { overflow-y: auto; display: flex; flex-direction: column; }
   body.mode-watch details[data-sec="lesson"], body.mode-create details[data-sec="lesson"] { order: -1; }
@@ -175,7 +177,7 @@
   <div id="modeBox">
     <div id="modeSeg" role="group" aria-label="Mode">
       <button id="modeExplore" class="on" aria-pressed="true" title="Look around freely; lessons are switched off">Explore</button>
-      <button id="modeWatch" aria-pressed="false" title="Play the lesson: stops set the view, show captions and play voice clips">Watch<span id="modeWatchN"></span></button>
+      <button id="modeWatch" aria-pressed="false" disabled title="Play the lesson: stops set the view, show captions and play voice clips">Watch<span id="modeWatchN"></span></button>
       <button id="modeCreate" class="adv" aria-pressed="false" title="Make or edit a lesson: stops never take over while you look for moments">Create</button>
     </div>
     <p class="hint mode-hint explore">Exploring: change anything. Lessons are switched off here.</p>

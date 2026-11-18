@@ -335,11 +335,13 @@ offline (the Quest 3 standalone setup in the README).
   page address (`?sample`, share links) is the cached page. Version-pinned CDN URLs are
   cache-first. Other same-origin files (e.g. trajectories behind share links) go straight to
   the network and are not cached; files opened from the device never touch it.
-- **Updates:** each navigation starts `updateSet()` (at most once a minute): it re-downloads
+- **Updates:** the page asks for `updateSet()` (message `md-vr-check-update`) 3 s after its
+  `load` event, so an update can never land while it is still fetching modules, and again
+  when an installed app is resumed (`visibilitychange`); at most once a minute. It re-downloads
   the whole set with `cache: 'no-cache'` (ETag revalidation, cheap when unchanged) and only
   if every app file arrived writes them all into the cache. If the page or a main module
   changed, it posts `md-vr-updated` and the page shows *A new version … Reload*
-  (`#updateNote`). So an upload reaches users on the launch after the next online one, or
+  (`#updateNote`, a banner at the top, visible with the panel folded). So an upload reaches users on the launch after the next online one, or
   at once with Reload.
 - **Versions:** `VERSION` names the cache; bump it when the file list changes, and old
   caches are deleted on activation.
@@ -652,6 +654,13 @@ Entering Watch applies the latest stop at or before the current frame (`applySto
 list, *Update stop*, `startVoice` and `deleteStopHere` do nothing outside Create; `gotoStop`
 does nothing in Explore and plays the clip only in Watch. Create is unavailable in student
 mode (`isStudent()`). `voice.unsaved` is a setter that shows the *unsaved* badge.
+The caption box (Create) is loaded from the stop being edited (`loadCaptionBox`, `editedStop`)
+whenever that stop changes or the mode is entered, unless it holds typed text that differs
+from that caption (`captionTyped`), which is kept until *Add* or *Update* applies it. One stop
+per frame: *Add stop here* is disabled on a stop's frame (and `＋ add stop` in VR). *Update*
+keeps the clip and, when done in VR, the desktop camera (`keepFromOld`). `applyLesson` asks
+before replacing a lesson with unsaved changes and drops a recording in progress
+(`voice.rec.cancel()`). Watch can't be entered without stops (`#modeWatch` starts disabled).
 `cam` holds the camera position and orbit target in **model coordinates**, so it survives
 a refit or window resize. Stops are kept sorted by frame.
 

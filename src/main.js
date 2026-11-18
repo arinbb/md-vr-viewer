@@ -132,6 +132,11 @@ $('viewport').appendChild(renderer.domElement);
 // installed (e.g. on a Quest 3). Not for file:// pages or the emulator; ?nosw turns it off.
 if ('serviceWorker' in navigator && location.protocol !== 'file:' && !params.has('emulate') && !params.has('nosw')) {
   navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('Offline mode unavailable', e));
+  // Ask the worker to look for a new version only once this page has loaded all its files (so
+  // an update can never mix into a loading page), and again when an installed app is resumed.
+  const askForUpdate = () => navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage('md-vr-check-update');
+  window.addEventListener('load', () => setTimeout(askForUpdate, 3000));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') askForUpdate(); });
   // The worker downloaded a newer version in the background: offer to switch to it.
   navigator.serviceWorker.addEventListener('message', (e) => {
     if (e.data !== 'md-vr-updated' || $('updateNote')) return;
@@ -139,7 +144,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !params.has
     note.id = 'updateNote';
     note.innerHTML = 'A new version of the viewer is ready. <button type="button">Reload</button>';
     note.querySelector('button').onclick = () => location.reload();
-    $('statusBox').appendChild(note);
+    document.body.appendChild(note);
   });
 }
 // Browsers that offer installation (Chrome, Edge) get an Install button in the playback bar.
@@ -1818,12 +1823,18 @@ function refreshActiveStop() {
   if (a !== S.activeStop) setActiveStop(a);
 }
 
-let editedStop = null; // the stop object the caption box shows (Create)
+// Create: the caption box shows the caption of the stop being edited. editedStop is the stop it
+// was loaded from; captionTyped is set once the user types, so moving between frames or stops
+// never throws away text they haven't applied yet (Add stop / Update stop apply it).
+let editedStop = null, captionTyped = false;
+function loadCaptionBox(st) {
+  editedStop = st || null;
+  if (captionTyped) return;
+  $('stopCaption').value = st ? st.cap || '' : '';
+}
 function setActiveStop(k) {
   S.activeStop = k;
   const st = S.stops[k];
-  const changed = (st || null) !== editedStop;
-  editedStop = st || null;
   const cap = $('caption');
   if (st && (st.cap || st.voice || S.mode === 'create')) {
     const v = st.voice ? ` · voice ${fmtDur(st.voice.dur)}` : '';
@@ -1836,10 +1847,18 @@ function setActiveStop(k) {
   }
   [...$('stopList').children].forEach((li, j) => li.classList.toggle('active', j === k));
   $('updateStop').disabled = k < 0;
-  $('addStop').textContent = k >= 0 && S.mode === 'create' ? 'Add another stop here' : 'Add stop here';
-  // Creating: the caption box follows the stop being edited.
-  if (S.mode === 'create' && changed) $('stopCaption').value = st ? st.cap || '' : '';
+  // One stop per frame: on a frame that has one, you update it instead of adding another.
+  const here = S.traj && S.stops.some((x) => x.f === Math.floor(S.frameF));
+  $('addStop').disabled = !!here;
+  $('addStop').title = here ? 'This frame already has a stop: change it with Update stop'
+    : 'Save the current frame, camera, selection and display settings with this caption';
+  if (S.mode === 'create' && (st || null) !== editedStop) loadCaptionBox(st);
 }
+// "Typed" means the box differs from the caption it was loaded with; undoing the edit lets it
+// follow the stops again.
+$('stopCaption').addEventListener('input', () => {
+  captionTyped = $('stopCaption').value !== (editedStop ? editedStop.cap || '' : '');
+});
 
 function renderStops() {
   if (voice.playingStop) S.voicePlaying = S.stops.indexOf(voice.playingStop); // indices move on insert/delete
@@ -1873,6 +1892,7 @@ const isStudent = () => document.body.classList.contains('student');
 function setMode(mode, { restore = true } = {}) {
   if (!MODE_NAMES.includes(mode)) mode = 'explore';
   if (mode === 'create' && isStudent()) mode = 'watch';
+  if (mode === 'watch' && !S.stops.length) return; // nothing to watch (the button is greyed out)
   if (mode === S.mode && document.body.classList.contains(`mode-${mode}`)) return;
   if (S.mode === 'create' && (voice.rec.recording || voice.busy)) finishVoice(); // keep a clip in progress
   stopVoice();
@@ -1884,6 +1904,7 @@ function setMode(mode, { restore = true } = {}) {
     b.setAttribute('aria-pressed', String(S.mode === m));
   }
   S.activeStop = -2; // forces the caption and stop list to refresh for the new mode
+  editedStop = undefined; // and, in Create, reloads the caption box for the stop here
   if (S.mode === 'explore') setActiveStop(-1);
   else {
     const sec = document.querySelector('details[data-sec="lesson"]');
@@ -1933,17 +1954,27 @@ $('stopList').addEventListener('click', (e) => {
 });
 $('addStop').onclick = () => {
   if (!S.traj || S.mode !== 'create') return;
+  if (S.stops.some((x) => x.f === Math.floor(S.frameF))) return; // one stop per frame
+  captionTyped = false;
   addStop(captureStop($('stopCaption').value.trim())); // the box now shows the new stop's caption
 };
 $('updateStop').onclick = () => {
   const k = S.activeStop;
   if (k < 0 || !S.traj || S.mode !== 'create') return;
   const old = S.stops.splice(k, 1)[0];
-  // An empty caption box keeps the stop's caption (the box is cleared after Add stop).
-  const st = captureStop($('stopCaption').value.trim() || old.cap || '');
-  if (old.voice) st.voice = old.voice; // updating the view or caption keeps the clip
+  // The box holds this stop's caption (loaded when you went to it), edited or not; clearing it
+  // removes the caption.
+  const st = captureStop($('stopCaption').value.trim());
+  keepFromOld(st, old);
+  captionTyped = false;
   addStop(st);
 };
+/** Update keeps what the new snapshot can't hold: the clip, and the camera when made in VR. */
+function keepFromOld(st, old) {
+  if (old.voice) st.voice = old.voice;
+  if (!st.cam && old.cam) st.cam = old.cam; // VR has no desktop camera to save
+  if (voice.playingStop === old) voice.playingStop = st;
+}
 function gotoStop(dir) {
   if (!S.stops.length || !S.traj || S.mode === 'explore') return; // Explore has no lesson
   const f = Math.floor(S.frameF);
@@ -2033,6 +2064,8 @@ function stopIndexHere() {
 }
 function voiceMsg(text) {
   $('voiceInfo').textContent = text;
+  if (S.mode !== 'create') setStatus(text); // the info line sits in the Create editor
+
   if (renderer.xr.isPresenting) vrNote(text);
 }
 /** A short vibration on every controller (start and end of a recording). */
@@ -2148,6 +2181,12 @@ function deleteStopHere() {
 }
 /** Replaces the stops with a lesson file's (after its trajectory, if both were opened). */
 function applyLesson(lesson, name) {
+  if (voice.unsaved && S.stops.length &&
+      !confirm(`Open the lesson ${name}? The current lesson has unsaved changes, which will be lost.`)) {
+    setStatus(`Kept the current lesson (${name} not opened).`);
+    return;
+  }
+  if (voice.rec.recording || voice.busy) { voice.pending = null; voice.rec.cancel(); } // belongs to the old lesson
   stopVoice();
   S.stops = lesson.stops;
   S.activeStop = -1;
@@ -2286,7 +2325,7 @@ function updateHover() {
     h.ctrl.getWorldPosition(_ro);
     _rd.set(0, 0, -1).applyQuaternion(h.ctrl.getWorldQuaternion(_rq));
     // 1. The wrist menu (on the other hand) takes priority over atoms.
-    if (menu.mesh.parent && menu.mesh.parent !== h.grip) {
+    if (menu.mesh.parent && !isMenuHolder(h)) {
       menuRay.set(_ro, _rd);
       const mh = menuRay.intersectObject(menu.mesh, false)[0];
       if (mh && mh.uv) {
@@ -2385,6 +2424,11 @@ function updateHands() {
     if (!h.source || !h.source.hand) continue;
     const J = h.hand.joints || {};
     const joint = (name) => (J[name] && J[name].visible ? J[name].position : null);
+    // Hand lost (out of view) while grabbing: let go, rather than jump to another anchor.
+    if (h.fist && h.fistOverride === undefined && !(J.wrist && J.wrist.visible)) {
+      h.fist = false; grabbers.delete(h); beginGrab();
+      continue;
+    }
     // Fist → grab. fistOverride lets automated tests stand in for a real fist.
     const changed = h.fistOverride !== undefined
       ? (h.fist !== h.fistOverride && ((h.fist = h.fistOverride), true))
@@ -2538,7 +2582,8 @@ const menu = (() => {
       ['delStop', () => (voice.deleteArmed ? 'press again' : '✕ delete stop')]]),
   };
   const student = () => document.body.classList.contains('student');
-  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES_VR), ...GRIDS[S.mode], ...ROW3[S.mode]];
+  const visibleButtons = () => [...TRANSPORT, ...(arSession ? MODES_AR : MODES_VR).filter((b) => b.id !== 'modeCreate' || !student()),
+    ...GRIDS[S.mode], ...ROW3[S.mode]];
   let infoShowsPlot = false; // the info panel currently shows the measurement plot (it scrubs)
   /** Sets a page control and fires its handler, so desktop and VR stay in sync. */
   const nudge = (id, d) => {
@@ -2612,7 +2657,7 @@ const menu = (() => {
       case 'updStop': {
         const k = stopIndexHere(), old = S.stops[k];
         const st = captureStop(old.cap || '');
-        if (old.voice) st.voice = old.voice;
+        keepFromOld(st, old);
         S.stops.splice(k, 1); addStop(st);
         vrNote(`Stop ${S.activeStop + 1} updated to this view`);
         break;

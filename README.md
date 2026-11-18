@@ -291,8 +291,11 @@ display settings (style, coloring, water, H-bonds, arrows, paths) at that moment
 
 - **Make one** (Create): go to the moment, set up the view, type a caption and click **Add
   stop here**. To change a stop, go to it (⏮ ⏭ or a click in the list): its caption appears in
-  the box; change the view or caption and click **Update stop** (an empty box keeps the
-  caption). ✕ deletes. Stops are kept in frame order.
+  the box; change the view or caption and click **Update stop** (clearing the box removes
+  the caption). A frame holds one stop, so on a stop's frame you update it rather than add
+  another. Text you've typed but not applied stays in the box while you move around. ✕
+  deletes. Stops are kept in frame order. Opening another lesson file asks first if this one
+  has unsaved changes.
 - **During playback** (Watch) the latest caption at or before the current frame is shown on
   screen and in the VR wrist menu. When playback reaches a stop, its settings and selection
   are applied, and with *Pause at stops* on, playback pauses so a student can read and look
